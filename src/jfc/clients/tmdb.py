@@ -603,7 +603,7 @@ class TMDbClient(BaseClient):
 
     async def get_series_schedule(self, tmdb_id: int) -> Optional[dict[str, Any]]:
         """Status plus last/next episode info of a series (for status tags)."""
-        response = await self.get(f"/tv/{tmdb_id}", params=self._params())
+        response = await self.get(f"/tv/{tmdb_id}", params=self._params(), quiet_statuses=(404,))
         if response.status_code == 404:
             return None
         response.raise_for_status()
@@ -618,7 +618,7 @@ class TMDbClient(BaseClient):
 
     async def get_series_status(self, tmdb_id: int) -> Optional[str]:
         """TMDb status string of a series (Returning Series, Ended, Canceled, ...)."""
-        response = await self.get(f"/tv/{tmdb_id}", params=self._params())
+        response = await self.get(f"/tv/{tmdb_id}", params=self._params(), quiet_statuses=(404,))
         if response.status_code == 404:
             return None
         response.raise_for_status()

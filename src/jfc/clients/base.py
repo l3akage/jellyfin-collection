@@ -61,6 +61,7 @@ class BaseClient:
         endpoint: str,
         params: Optional[dict[str, Any]] = None,
         json: Optional[dict[str, Any]] = None,
+        quiet_statuses: tuple[int, ...] = (),
         **kwargs,
     ) -> httpx.Response:
         """
@@ -71,6 +72,7 @@ class BaseClient:
             endpoint: API endpoint
             params: Query parameters
             json: JSON body
+            quiet_statuses: Status codes the caller handles itself (logged at debug level only)
             **kwargs: Additional httpx arguments
 
         Returns:
@@ -88,7 +90,9 @@ class BaseClient:
             **kwargs,
         )
 
-        if response.status_code >= 400:
+        if response.status_code in quiet_statuses:
+            logger.debug(f"[{self.__class__.__name__}] {method} {endpoint} -> {response.status_code}")
+        elif response.status_code >= 400:
             logger.error(
                 f"[{self.__class__.__name__}] {method} {endpoint} "
                 f"failed with {response.status_code}: {response.text}"
