@@ -109,7 +109,7 @@ class TraktSettings(BaseModel):
 
     client_id: str = Field(default="")
     client_secret: str = Field(default="")
-    redirect_uri: str = Field(default="urn:ietf:wg:oauth:2.0:oob")
+    redirect_uri: str = Field(default="http://localhost:8765/callback")
     access_token: Optional[str] = Field(default=None)
     refresh_token: Optional[str] = Field(default=None)
 
@@ -325,7 +325,7 @@ class Settings(BaseSettings):
     # Trakt
     trakt_client_id: str = Field(default="")
     trakt_client_secret: str = Field(default="")
-    trakt_redirect_uri: str = Field(default="urn:ietf:wg:oauth:2.0:oob")
+    trakt_redirect_uri: str = Field(default="http://localhost:8765/callback")
     trakt_access_token: Optional[str] = Field(default=None)
     trakt_refresh_token: Optional[str] = Field(default=None)
 

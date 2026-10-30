@@ -51,7 +51,9 @@ class TraktTokens(BaseModel):
         )
 
 
-DEFAULT_REDIRECT_URI = "urn:ietf:wg:oauth:2.0:oob"
+# Trakt developer apps only accept localhost redirect URIs; register this one (or set
+# TRAKT_REDIRECT_URI to the one you registered).
+DEFAULT_REDIRECT_URI = "http://localhost:8765/callback"
 
 
 def generate_pkce() -> tuple[str, str]:
@@ -72,6 +74,71 @@ def extract_authorization_code(user_input: str) -> Optional[str]:
         codes = query.get("code")
         return codes[0] if codes else None
     return text
+
+
+def is_local_redirect(redirect_uri: str) -> bool:
+    """Whether the redirect URI points to this machine (JFC can listen for the callback)."""
+    parsed = urlparse(redirect_uri)
+    return parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1") and bool(parsed.port)
+
+
+async def wait_for_local_callback(
+    redirect_uri: str,
+    expected_state: Optional[str] = None,
+    timeout: float = 300.0,
+) -> Optional[str]:
+    """
+    Listen on a localhost redirect URI until the browser delivers `?code=...`.
+
+    Returns the authorization code, or None on timeout / error / state mismatch.
+    Raises OSError if the port cannot be bound.
+    """
+    parsed = urlparse(redirect_uri)
+    result: asyncio.Future = asyncio.get_running_loop().create_future()
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        body = "You can close this window and return to the terminal."
+        status = "200 OK"
+        try:
+            request_line = (await asyncio.wait_for(reader.readline(), 10)).decode("latin-1")
+            parts = request_line.split()
+            target = urlparse(parts[1]) if len(parts) >= 2 else None
+            if not target or target.path != (parsed.path or "/"):
+                status, body = "404 Not Found", "Not found"
+            else:
+                query = parse_qs(target.query)
+                code = (query.get("code") or [None])[0]
+                state = (query.get("state") or [None])[0]
+                if query.get("error"):
+                    status, body = "400 Bad Request", f"Trakt returned an error: {query['error'][0]}"
+                    if not result.done():
+                        result.set_result(None)
+                elif code and (expected_state is None or state == expected_state):
+                    if not result.done():
+                        result.set_result(code)
+                else:
+                    status, body = "400 Bad Request", "Missing code or state mismatch"
+        except Exception:
+            status, body = "400 Bad Request", "Bad request"
+        finally:
+            payload = body.encode()
+            writer.write(
+                f"HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\n"
+                f"Content-Length: {len(payload)}\r\nConnection: close\r\n\r\n".encode() + payload
+            )
+            try:
+                await writer.drain()
+            finally:
+                writer.close()
+
+    server = await asyncio.start_server(handle, host=parsed.hostname, port=parsed.port)
+    try:
+        return await asyncio.wait_for(result, timeout)
+    except asyncio.TimeoutError:
+        return None
+    finally:
+        server.close()
+        await server.wait_closed()
 
 
 class TraktAuth:
@@ -105,6 +172,7 @@ class TraktAuth:
         self.client_secret = client_secret or ""
         self.redirect_uri = redirect_uri or DEFAULT_REDIRECT_URI
         self.data_dir = data_dir
+        self.pkce_state: Optional[str] = None
         self.token_path = data_dir / self.TOKEN_FILE
         self._tokens: Optional[TraktTokens] = None
 
@@ -122,13 +190,14 @@ class TraktAuth:
     def build_pkce_authorization(self) -> tuple[str, str]:
         """Return (authorize_url, code_verifier). Keep the verifier for `pkce_exchange`."""
         verifier, challenge = generate_pkce()
+        self.pkce_state = secrets.token_urlsafe(16)
         params = {
             "response_type": "code",
             "client_id": self.client_id,
             "redirect_uri": self.redirect_uri,
             "code_challenge": challenge,
             "code_challenge_method": "S256",
-            "state": secrets.token_urlsafe(16),
+            "state": self.pkce_state,
         }
         return f"{self.AUTHORIZE_URL}?{urlencode(params)}", verifier
 

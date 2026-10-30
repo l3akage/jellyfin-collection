@@ -170,13 +170,19 @@ Trakt no longer issues a client secret to new apps; they sign users in with
 jfc trakt-auth
 ```
 
-It prints an authorize URL; open it, allow access and paste the code (or the whole redirect URL)
-back into the terminal. The tokens are stored in the data directory and refreshed automatically
-(without a secret). `TRAKT_REDIRECT_URI` must be one of the redirect URIs of your Trakt app
-(default `urn:ietf:wg:oauth:2.0:oob`, which Trakt discourages; an `https://` page of yours works
-too, the code is in its `?code=` parameter). Apps that still have a secret keep using the device
-code flow (`--pkce` forces PKCE, `--device` forces the device flow). The sign-in is interactive, so
-run it once by hand (in Docker: `docker compose exec -it jellyfin-collection jfc trakt-auth`).
+Trakt developer apps only accept `localhost` redirect URIs. Enter `http://localhost:8765/callback`
+as *Redirect URI* in your Trakt app (or set `TRAKT_REDIRECT_URI` to the one you registered). The
+command prints an authorize URL; after you allow access, the browser is redirected to that
+`localhost` address, JFC listens there and picks up the code itself.
+
+If the browser runs on another machine than JFC (server, Docker), the redirect cannot arrive. The
+browser then shows a "can't connect" page, but its address bar contains `...?code=...`: run
+`jfc trakt-auth --paste` and paste that whole URL (or just the code). The tokens are stored in the
+data directory and refreshed automatically (without a secret). Apps that still have a secret keep
+using the device code flow (`--pkce` forces PKCE, `--device` forces the device flow). The sign-in is
+interactive, so run it once by hand (in Docker:
+`docker compose exec -it jellyfin-collection jfc trakt-auth --paste`; the listener would need the
+port published).
 
 ## Kometa YAML Configuration
 

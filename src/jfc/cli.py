@@ -733,6 +733,9 @@ def trakt_auth(
     pkce: bool = typer.Option(
         False, "--pkce", help="Use the PKCE sign-in even if a client secret is set"
     ),
+    paste: bool = typer.Option(
+        False, "--paste", help="PKCE: do not listen on localhost, paste the code / redirect URL instead"
+    ),
 ) -> None:
     """Authenticate with Trakt (PKCE for apps without client secret, else device code flow)."""
     settings = get_settings()
@@ -748,7 +751,12 @@ def trakt_auth(
         console.print("[red]Error:[/red] the device code flow needs TRAKT_CLIENT_SECRET; use PKCE instead")
         raise typer.Exit(1)
 
-    from jfc.services.trakt_auth import TraktAuth, extract_authorization_code
+    from jfc.services.trakt_auth import (
+        TraktAuth,
+        extract_authorization_code,
+        is_local_redirect,
+        wait_for_local_callback,
+    )
 
     auth = TraktAuth(
         client_id=settings.trakt.client_id,
@@ -793,9 +801,20 @@ def trakt_auth(
         console.print("  1. Open this URL and allow access:")
         console.print(f"     {url}")
         console.print()
-        console.print(f"  2. Paste the code (or the full redirect URL). Redirect URI: {auth.redirect_uri}")
-        console.print()
-        code = extract_authorization_code(typer.prompt("Code or redirect URL"))
+        code = None
+        if not paste and is_local_redirect(auth.redirect_uri):
+            console.print(f"  2. Waiting for the redirect to {auth.redirect_uri} ...")
+            console.print("     [dim](Browser on another machine? Press Ctrl+C and run: jfc trakt-auth --paste)[/dim]")
+            try:
+                code = await wait_for_local_callback(auth.redirect_uri, auth.pkce_state)
+            except OSError as e:
+                console.print(f"[yellow]Cannot listen on {auth.redirect_uri}: {e}[/yellow]")
+            if not code:
+                console.print("[yellow]No redirect received, paste it instead.[/yellow]")
+        if not code:
+            console.print(f"  2. Paste the code or the full redirect URL (Redirect URI: {auth.redirect_uri})")
+            console.print()
+            code = extract_authorization_code(typer.prompt("Code or redirect URL"))
         if not code:
             console.print("[red]✗ No authorization code found[/red]")
             raise typer.Exit(1)

@@ -200,3 +200,56 @@ class TestTraktPkce:
         assert exchange["grant_type"] == "authorization_code" and exchange["code_verifier"] == "verifier1"
         assert refresh["grant_type"] == "refresh_token" and refresh["redirect_uri"]
         assert all("client_secret" not in body for body in sent)
+
+
+class TestTraktLocalCallback:
+    def test_is_local_redirect(self):
+        from jfc.services.trakt_auth import is_local_redirect
+
+        assert is_local_redirect("http://localhost:8765/callback")
+        assert is_local_redirect("http://127.0.0.1:9000/cb")
+        assert not is_local_redirect("https://example.org/cb")
+        assert not is_local_redirect("http://localhost/cb")  # no explicit port
+        assert not is_local_redirect("urn:ietf:wg:oauth:2.0:oob")
+
+    @pytest.mark.asyncio
+    async def test_callback_delivers_code(self):
+        import asyncio
+        import socket
+
+        import httpx
+
+        from jfc.services.trakt_auth import wait_for_local_callback
+
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        uri = f"http://localhost:{port}/callback"
+
+        task = asyncio.create_task(wait_for_local_callback(uri, expected_state="s1", timeout=10))
+        await asyncio.sleep(0.2)
+        async with httpx.AsyncClient() as client:
+            wrong = await client.get(f"{uri}?code=bad&state=other")
+            assert wrong.status_code == 400
+            ok = await client.get(f"{uri}?code=abc&state=s1")
+            assert ok.status_code == 200
+        assert await task == "abc"
+
+    @pytest.mark.asyncio
+    async def test_callback_error_returns_none(self):
+        import asyncio
+        import socket
+
+        import httpx
+
+        from jfc.services.trakt_auth import wait_for_local_callback
+
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        uri = f"http://localhost:{port}/callback"
+        task = asyncio.create_task(wait_for_local_callback(uri, timeout=10))
+        await asyncio.sleep(0.2)
+        async with httpx.AsyncClient() as client:
+            await client.get(f"{uri}?error=access_denied")
+        assert await task is None
