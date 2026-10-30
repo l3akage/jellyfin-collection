@@ -6,6 +6,40 @@ This guide helps you migrate your existing Kometa or Plex Meta Manager configura
 
 JFC is designed to be largely compatible with Kometa YAML configurations. Most configurations will work with minimal changes.
 
+## What works like in Kometa
+
+| Kometa feature | JFC |
+|----------------|-----|
+| Templates with `<<variables>>`, `optional`, `default`, template lists | ✅ |
+| `template_variables:` on `- file:` entries | ✅ |
+| `- default: imdb / network / streaming / universe` | ✅ built in (see below) |
+| `schedule: range(MM/DD-MM/DD)` + `delete_not_scheduled` (seasonal) | ✅ |
+| `dynamic:` movable holidays (`easter_dates`, `good_friday_dates`, `chinese_new_year_dates`) | ✅ |
+| `item_label`, `non_item_remove_label`, `item_label.remove` | ✅ as Jellyfin tags |
+| `build_collection: false` (label only) | ✅ |
+| `minimum_items` / `delete_below_minimum` | ✅ |
+| `radarr_add_missing` / `sonarr_add_missing`, library `add_missing` | ✅ (see warning below) |
+| `url_poster`, `smart_label`, `visible_*`, `collection_mode`, overlays, operations | ❌ ignored |
+
+**Kometa defaults.** `imdb` (Top 250 + Popular), `network` (TMDb network IDs), `streaming`
+(TMDb watch providers; the region is `settings.tmdb.region`) and `universe` (`mcu`, `trek`, `star`,
+`wizard`). `include:` / `exclude:` / `name_format:` / `name_<key>:` / `sync_mode` / `sort_by` are
+honored. An empty `include:` for `network` builds nothing.
+
+**add_missing.** `settings.radarr.add_missing` / `settings.sonarr.add_missing` default to `true`
+(the previous JFC behavior). Kometa's default is `false`: set it explicitly to avoid that seasonal
+and franchise collections flood Radarr/Sonarr.
+
+### Library filters
+
+`plex_all: true` with `filters:` and `plex_search` (`all` / `any` / `not`, `limit`, `sort_by`) are
+evaluated against Jellyfin items. Attributes: `title`, `genre`, `year`, `release`, `added` (days),
+`label`, `edition` (`{edition-...}` in the file name), `resolution`, `has_dolby_vision`, `hdr`,
+`audio_language`, `subtitle_language`, `studio`, `network`, `audience_rating`, `critic_rating`,
+`runtime`, `content_rating`, `filepath`, `tmdb_status`. Modifiers: `.not`, `.is`, `.isnot`, `.gt`,
+`.gte`, `.lt`, `.lte`, `.regex`, `.begins`, `.ends`, `.before`, `.after`. Comma separated values
+mean "any of". Unknown attributes are ignored with a debug message.
+
 ## Migration Steps
 
 ### 1. Copy Configuration Files
@@ -74,8 +108,11 @@ Most builders are supported. Here's the mapping:
 | `trakt_popular` | ✅ Supported | - |
 | `trakt_chart` | ✅ Supported | - |
 | `trakt_list` | ✅ Supported | - |
-| `plex_search` | ✅ Supported | Jellyfin library search (`Genres`, `year`, `year.gte`, `year.lte`, `limit`) |
-| `mdblist_list` | 🚧 Planned | - |
+| `plex_search` / `plex_all` + `filters` | ✅ Supported | Jellyfin library query, see [Library filters](#library-filters) |
+| `tmdb_movie` / `tmdb_show` / `tvdb_show` | ✅ Supported | ID lists |
+| `tmdb_collection` / `tmdb_keyword` / `tmdb_director` | ✅ Supported | Franchises, keywords, directors |
+| `dynamic_collections` (`type: tmdb_collection`) | ✅ Supported | One collection per franchise in the library (Jellyfin `TmdbCollection` id) |
+| `mdblist_list` | ✅ Supported | Public list URLs (API key optional) |
 | `imdb_chart` | ✅ Supported | top, boxoffice, moviemeter, tvmeter |
 | `imdb_list` | ✅ Supported | `ls...` lists |
 | `tmdb_list` | ✅ Supported | ID/string/URL accepted |
@@ -125,13 +162,10 @@ jfc run --config ./config --dry-run
 
 ### Overlays
 
-JFC does not support overlays. Remove overlay configurations:
-
-```yaml
-# Remove these
-overlay_files:
-  - file: config/overlays.yml
-```
+JFC itself does not draw overlays. Remove `overlay_files:` from the config; the equivalent is done by
+the [JellyTag](https://github.com/l3akage/jellyfin-plugins) plugin (rating, resolution, audio language,
+edition and status banners). Status and "coming soon" banners are driven by tags that JFC writes, see
+[Status tags & upcoming](status-and-upcoming.md).
 
 ### Collection Mode
 
@@ -147,7 +181,8 @@ visible_shared: false
 
 ### Smart Collections
 
-Smart collections / smart filters are Plex-specific. Convert to regular collections with filters:
+`smart_filter` / `smart_url` are Plex-specific. Use `plex_all: true` + `filters:` or `plex_search`
+(both are evaluated by JFC against the Jellyfin library) instead. Example of a conversion:
 
 ```yaml
 # Before (Plex smart collection)
