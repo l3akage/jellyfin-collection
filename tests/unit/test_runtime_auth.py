@@ -130,3 +130,73 @@ async def test_startup_gives_up_after_max_attempts(monkeypatch) -> None:
 
     assert await service.run_startup() is False
     assert service.check_connections.await_count == StartupService.STARTUP_MAX_ATTEMPTS
+
+
+class TestTraktPkce:
+    def test_pkce_pair_is_valid_s256(self):
+        import base64
+        import hashlib
+
+        from jfc.services.trakt_auth import generate_pkce
+
+        verifier, challenge = generate_pkce()
+        assert 43 <= len(verifier) <= 128
+        expected = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+        assert challenge == expected
+        assert "=" not in challenge
+
+    def test_authorize_url(self, tmp_path):
+        from urllib.parse import parse_qs, urlparse
+
+        from jfc.services.trakt_auth import TraktAuth
+
+        auth = TraktAuth("cid", "", tmp_path, redirect_uri="https://example.org/cb")
+        url, verifier = auth.build_pkce_authorization()
+        parsed = urlparse(url)
+        query = parse_qs(parsed.query)
+        assert f"{parsed.scheme}://{parsed.netloc}{parsed.path}" == "https://auth.trakt.tv/oauth/authorize"
+        assert query["client_id"] == ["cid"] and query["code_challenge_method"] == ["S256"]
+        assert query["redirect_uri"] == ["https://example.org/cb"] and query["response_type"] == ["code"]
+        assert verifier and verifier not in url
+
+    def test_extract_code(self):
+        from jfc.services.trakt_auth import extract_authorization_code
+
+        assert extract_authorization_code("abc123") == "abc123"
+        assert extract_authorization_code("https://example.org/cb?code=xyz&state=1") == "xyz"
+        assert extract_authorization_code("https://example.org/cb?error=denied") is None
+        assert extract_authorization_code("  ") is None
+
+    def test_secret_only_sent_when_set(self, tmp_path):
+        from jfc.services.trakt_auth import TraktAuth
+
+        assert TraktAuth("cid", "", tmp_path)._client_credentials() == {"client_id": "cid"}
+        assert not TraktAuth("cid", "", tmp_path).has_client_secret
+        assert TraktAuth("cid", "s", tmp_path)._client_credentials() == {"client_id": "cid", "client_secret": "s"}
+
+    @pytest.mark.asyncio
+    async def test_exchange_and_refresh_requests_have_no_secret(self, tmp_path, monkeypatch):
+        import httpx
+
+        from jfc.services.trakt_auth import TraktAuth
+
+        sent = []
+
+        async def fake_post(self, url, json=None, **kwargs):
+            sent.append(json)
+            return httpx.Response(
+                200,
+                json={"access_token": "a", "refresh_token": "r", "expires_in": 7200},
+                request=httpx.Request("POST", url),
+            )
+
+        monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+        auth = TraktAuth("cid", "", tmp_path)
+        tokens = await auth.pkce_exchange("code1", "verifier1")
+        assert tokens and tokens.access_token == "a"
+        await auth.refresh_tokens("r")
+
+        exchange, refresh = sent
+        assert exchange["grant_type"] == "authorization_code" and exchange["code_verifier"] == "verifier1"
+        assert refresh["grant_type"] == "refresh_token" and refresh["redirect_uri"]
+        assert all("client_secret" not in body for body in sent)

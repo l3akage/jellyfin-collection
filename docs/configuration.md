@@ -161,6 +161,23 @@ jfc trakt-logout
 
 Tokens are stored in `/data/trakt_tokens.json` and refreshed automatically.
 
+## Trakt sign-in
+
+Trakt no longer issues a client secret to new apps; they sign users in with
+[PKCE](https://developer.trakt.tv/docs/pkce). Without `TRAKT_CLIENT_SECRET`, JFC does the same:
+
+```bash
+jfc trakt-auth
+```
+
+It prints an authorize URL; open it, allow access and paste the code (or the whole redirect URL)
+back into the terminal. The tokens are stored in the data directory and refreshed automatically
+(without a secret). `TRAKT_REDIRECT_URI` must be one of the redirect URIs of your Trakt app
+(default `urn:ietf:wg:oauth:2.0:oob`, which Trakt discourages; an `https://` page of yours works
+too, the code is in its `?code=` parameter). Apps that still have a secret keep using the device
+code flow (`--pkce` forces PKCE, `--device` forces the device flow). The sign-in is interactive, so
+run it once by hand (in Docker: `docker compose exec -it jellyfin-collection jfc trakt-auth`).
+
 ## Kometa YAML Configuration
 
 JFC uses the same YAML format as Kometa/Plex Meta Manager.

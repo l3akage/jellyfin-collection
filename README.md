@@ -87,7 +87,7 @@ JFC uses a **dual configuration system** for flexibility:
 |---------|----------|-------------|
 | Radarr | `RADARR_API_KEY` | Auto-request missing movies |
 | Sonarr | `SONARR_API_KEY` | Auto-request missing series |
-| Trakt | `TRAKT_CLIENT_ID`, `TRAKT_CLIENT_SECRET` | Trakt lists and charts |
+| Trakt | `TRAKT_CLIENT_ID` (`TRAKT_CLIENT_SECRET` only for older apps), `TRAKT_REDIRECT_URI` | Trakt lists and charts, see [Trakt sign-in](docs/configuration.md#trakt-sign-in) |
 | OpenAI | `OPENAI_API_KEY` | AI poster generation |
 
 ### Configuration (config.yml)

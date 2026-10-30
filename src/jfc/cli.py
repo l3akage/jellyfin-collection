@@ -33,7 +33,7 @@ async def ensure_trakt_auth(settings) -> bool:
     Automatically starts device code flow if not authenticated.
     Returns True if authenticated (or Trakt not configured), False if auth failed.
     """
-    if not settings.trakt.client_id or not settings.trakt.client_secret:
+    if not settings.trakt.client_id:
         return True  # Trakt not configured, nothing to do
 
     from jfc.services.trakt_auth import TraktAuth
@@ -42,6 +42,7 @@ async def ensure_trakt_auth(settings) -> bool:
         client_id=settings.trakt.client_id,
         client_secret=settings.trakt.client_secret,
         data_dir=settings.get_data_path(),
+        redirect_uri=settings.trakt.redirect_uri,
     )
 
     # Try to get valid token (auto-refresh if expired)
@@ -49,6 +50,16 @@ async def ensure_trakt_auth(settings) -> bool:
 
     if access_token:
         return True  # Already authenticated
+
+    # PKCE apps (no client secret) need the browser sign-in of `jfc trakt-auth`; it is
+    # interactive, so it is not started automatically
+    if not auth.has_client_secret:
+        console.print()
+        console.print("[yellow]Trakt is configured but not authenticated.[/yellow]")
+        console.print("Run [bold]jfc trakt-auth[/bold] once (PKCE sign-in), then start again.")
+        console.print("[yellow]Continuing without Trakt...[/yellow]")
+        console.print()
+        return False
 
     # Not authenticated - start device code flow
     console.print()
@@ -715,23 +726,35 @@ def regenerate_posters(
 
 
 @app.command()
-def trakt_auth() -> None:
-    """Authenticate with Trakt using OAuth Device Code flow."""
+def trakt_auth(
+    device: bool = typer.Option(
+        False, "--device", help="Use the device code flow (needs a client secret)"
+    ),
+    pkce: bool = typer.Option(
+        False, "--pkce", help="Use the PKCE sign-in even if a client secret is set"
+    ),
+) -> None:
+    """Authenticate with Trakt (PKCE for apps without client secret, else device code flow)."""
     settings = get_settings()
     setup_logging(level="WARNING")
 
     # Check if Trakt is configured
-    if not settings.trakt.client_id or not settings.trakt.client_secret:
-        console.print("[red]Error:[/red] TRAKT_CLIENT_ID and TRAKT_CLIENT_SECRET must be set")
+    if not settings.trakt.client_id:
+        console.print("[red]Error:[/red] TRAKT_CLIENT_ID must be set")
         console.print("\nGet your credentials at: https://trakt.tv/oauth/applications")
         raise typer.Exit(1)
 
-    from jfc.services.trakt_auth import TraktAuth
+    if device and not settings.trakt.client_secret:
+        console.print("[red]Error:[/red] the device code flow needs TRAKT_CLIENT_SECRET; use PKCE instead")
+        raise typer.Exit(1)
+
+    from jfc.services.trakt_auth import TraktAuth, extract_authorization_code
 
     auth = TraktAuth(
         client_id=settings.trakt.client_id,
         client_secret=settings.trakt.client_secret,
         data_dir=settings.get_data_path(),
+        redirect_uri=settings.trakt.redirect_uri,
     )
 
     # Check if already authenticated
@@ -760,8 +783,29 @@ def trakt_auth() -> None:
         console.print()
         console.print("[dim]Waiting for authorization...[/dim]")
 
+    async def _auth_pkce():
+        url, verifier = auth.build_pkce_authorization()
+        console.print()
+        console.print("[cyan]═══════════════════════════════════════════════════════════[/cyan]")
+        console.print("[cyan]                 TRAKT AUTHENTICATION (PKCE)               [/cyan]")
+        console.print("[cyan]═══════════════════════════════════════════════════════════[/cyan]")
+        console.print()
+        console.print("  1. Open this URL and allow access:")
+        console.print(f"     {url}")
+        console.print()
+        console.print(f"  2. Paste the code (or the full redirect URL). Redirect URI: {auth.redirect_uri}")
+        console.print()
+        code = extract_authorization_code(typer.prompt("Code or redirect URL"))
+        if not code:
+            console.print("[red]✗ No authorization code found[/red]")
+            raise typer.Exit(1)
+        return await auth.pkce_exchange(code, verifier)
+
     async def _auth():
-        tokens = await auth.device_code_flow(on_code_received=on_code_received)
+        if device or (auth.has_client_secret and not pkce):
+            tokens = await auth.device_code_flow(on_code_received=on_code_received)
+        else:
+            tokens = await _auth_pkce()
 
         if tokens:
             console.print()
@@ -784,7 +828,7 @@ def trakt_status() -> None:
 
     if not settings.trakt.client_id:
         console.print("[yellow]Trakt not configured[/yellow]")
-        console.print("Set TRAKT_CLIENT_ID and TRAKT_CLIENT_SECRET in your .env")
+        console.print("Set TRAKT_CLIENT_ID (and TRAKT_CLIENT_SECRET if your app has one) in your .env")
         raise typer.Exit(0)
 
     from jfc.services.trakt_auth import TraktAuth
@@ -793,6 +837,7 @@ def trakt_status() -> None:
         client_id=settings.trakt.client_id,
         client_secret=settings.trakt.client_secret,
         data_dir=settings.get_data_path(),
+        redirect_uri=settings.trakt.redirect_uri,
     )
 
     tokens = auth.load_tokens()
@@ -827,6 +872,7 @@ def trakt_logout() -> None:
         client_id=settings.trakt.client_id,
         client_secret=settings.trakt.client_secret,
         data_dir=settings.get_data_path(),
+        redirect_uri=settings.trakt.redirect_uri,
     )
 
     tokens = auth.load_tokens()

@@ -16,7 +16,7 @@ class TraktClient(BaseClient):
     def __init__(
         self,
         client_id: str,
-        client_secret: str,
+        client_secret: str = "",
         access_token: Optional[str] = None,
     ):
         """
@@ -24,7 +24,7 @@ class TraktClient(BaseClient):
 
         Args:
             client_id: Trakt application client ID
-            client_secret: Trakt application client secret
+            client_secret: Trakt application client secret (empty for PKCE apps)
             access_token: OAuth access token (for authenticated requests)
         """
         headers = {

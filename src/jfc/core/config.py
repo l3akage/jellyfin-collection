@@ -109,6 +109,7 @@ class TraktSettings(BaseModel):
 
     client_id: str = Field(default="")
     client_secret: str = Field(default="")
+    redirect_uri: str = Field(default="urn:ietf:wg:oauth:2.0:oob")
     access_token: Optional[str] = Field(default=None)
     refresh_token: Optional[str] = Field(default=None)
 
@@ -324,6 +325,7 @@ class Settings(BaseSettings):
     # Trakt
     trakt_client_id: str = Field(default="")
     trakt_client_secret: str = Field(default="")
+    trakt_redirect_uri: str = Field(default="urn:ietf:wg:oauth:2.0:oob")
     trakt_access_token: Optional[str] = Field(default=None)
     trakt_refresh_token: Optional[str] = Field(default=None)
 
@@ -487,6 +489,7 @@ class Settings(BaseSettings):
         return TraktSettings(
             client_id=self.trakt_client_id,
             client_secret=self.trakt_client_secret,
+            redirect_uri=self.trakt_redirect_uri,
             access_token=self.trakt_access_token,
             refresh_token=self.trakt_refresh_token,
         )
