@@ -56,7 +56,8 @@ class MDBListClient(BaseClient):
             fields = dict(
                 title=entry.get("title") or "Unknown",
                 year=entry.get("release_year") or entry.get("year"),
-                tmdb_id=_to_int(entry.get("tmdb_id") or entry.get("tmdbid")),
+                # MDBList list JSON puts the TMDb id in `id` and leaves `tmdb_id` empty
+                tmdb_id=_to_int(entry.get("tmdb_id") or entry.get("tmdbid") or entry.get("id")),
                 imdb_id=entry.get("imdb_id") or entry.get("imdbid"),
             )
             if is_show:
