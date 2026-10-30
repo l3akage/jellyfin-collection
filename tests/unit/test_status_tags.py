@@ -109,3 +109,18 @@ async def test_service_adds_and_removes_only_its_own_tags():
     assert kwargs["add"] == [f"UpcomingEpisode:{(TODAY + timedelta(days=3)).isoformat()}"]
     assert sorted(kwargs["remove"]) == ["EndedShows", "UpcomingEpisode:2026-01-01"]
     # "Favorite" is not a status tag and must never be touched
+
+
+def test_new_show_requires_recent_premiere_when_configured() -> None:
+    from datetime import date, datetime
+
+    from jfc.services.status_tags import StatusTagSettings, compute_status_tags
+
+    today = date(2026, 10, 30)
+    base = dict(schedule=None, date_added=datetime(2026, 10, 29), current_tags=[], today=today)
+    old = date(1994, 9, 22)
+    off = StatusTagSettings()
+    on = StatusTagSettings(new_show_premiered_within_days=365)
+    assert "NewShow" in compute_status_tags(settings=off, premiere_date=old, **base)
+    assert "NewShow" not in compute_status_tags(settings=on, premiere_date=old, **base)
+    assert "NewShow" in compute_status_tags(settings=on, premiere_date=date(2026, 9, 1), **base)

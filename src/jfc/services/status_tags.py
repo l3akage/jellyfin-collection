@@ -46,6 +46,9 @@ class StatusTagSettings:
 
     library: Optional[str] = None
     recent_days_new_show: int = 7
+    # >0: NewShow additionally needs a premiere within this many days (a freshly imported library
+    # would otherwise mark every series as new); 0 = only the date added counts (TSSK behavior)
+    new_show_premiered_within_days: int = 0
     future_days_new_season: int = 31
     recent_days_new_season_started: int = 7
     future_days_upcoming_episode: int = 31
@@ -100,6 +103,7 @@ def compute_status_tags(
     current_tags: list[str],
     today: date,
     settings: StatusTagSettings,
+    premiere_date: Optional[date] = None,
 ) -> list[str]:
     """Desired status tags of one series."""
     tags: list[str] = []
@@ -110,7 +114,11 @@ def compute_status_tags(
     # NewShow: purely library based, works without TMDb data
     if settings.process_new_shows and date_added and not coming_soon:
         added = date_added.date()
-        if 0 <= (today - added).days <= settings.recent_days_new_show:
+        recent = 0 <= (today - added).days <= settings.recent_days_new_show
+        limit = settings.new_show_premiered_within_days
+        if recent and limit > 0 and (premiere_date is None or (today - premiere_date).days > limit):
+            recent = False
+        if recent:
             tags.append("NewShow")
 
     if not schedule:
@@ -220,6 +228,7 @@ class StatusTagService:
             desired = compute_status_tags(
                 schedule=schedules.get(item.tmdb_id) if item.tmdb_id else None,
                 date_added=item.date_added,
+                premiere_date=item.premiere_date,
                 current_tags=item.tags,
                 today=today,
                 settings=self.settings,

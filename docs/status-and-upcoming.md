@@ -26,7 +26,7 @@ All data comes from TMDb (status, last/next episode); Sonarr is not required. Wr
 
 | Tag | Meaning |
 |-----|---------|
-| `NewShow` | added to the library within `recent_days_new_show` days (not for `Coming Soon` items) |
+| `NewShow` | added to the library within `recent_days_new_show` days (not for `Coming Soon` items); with `new_show_premiered_within_days: N` it must also have premiered within N days (useful after importing a whole library) |
 | `NewSeasonSoon:<season>:<date>` | next episode is episode 1 of season 2+, within `future_days_new_season` |
 | `NewSeasonStarted:<season>` | season 2+ premiere aired within `recent_days_new_season_started` |
 | `UpcomingEpisode:<date>` | next episode within `future_days_upcoming_episode` |
