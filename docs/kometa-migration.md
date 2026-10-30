@@ -24,7 +24,14 @@ JFC is designed to be largely compatible with Kometa YAML configurations. Most c
 **Kometa defaults.** `imdb` (Top 250 + Popular), `network` (TMDb network IDs), `streaming`
 (TMDb watch providers; the region is `settings.tmdb.region`) and `universe` (`mcu`, `trek`, `star`,
 `wizard`). `include:` / `exclude:` / `name_format:` / `name_<key>:` / `sync_mode` / `sort_by` are
-honored. An empty `include:` for `network` builds nothing.
+honored. An empty `include:` for `network` builds nothing. `watch_region` (streaming) overrides the
+TMDb region.
+
+**Movies and series in one collection.** Jellyfin collections can hold both. Set
+`include_series: <series library name>` on a movie collection (or `series_library: Serien` as
+`template_variables` of `- default: universe`): the same sources are queried for series (`tmdb_show`,
+`tmdb_keyword`, Trakt/MDBList series entries) and matched in that library. The Star Trek and Star Wars
+universes ship with their series; the MCU uses its TMDb keyword for both.
 
 **add_missing.** `settings.radarr.add_missing` / `settings.sonarr.add_missing` default to `true`
 (the previous JFC behavior). Kometa's default is `false`: set it explicitly to avoid that seasonal

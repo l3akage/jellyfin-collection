@@ -45,11 +45,16 @@ UNIVERSES: dict[str, tuple[str, dict[str, Any]]] = {
     "mcu": ("Marvel Cinematic Universe", {"tmdb_keyword": 180547}),
     "trek": (
         "Star Trek Universe",
-        {"trakt_list": "https://trakt.tv/users/rzepkowski/lists/star-trek-movies?sort=rank,asc"},
+        {"trakt_list": "https://trakt.tv/users/rzepkowski/lists/star-trek-movies?sort=rank,asc",
+            # series, only used when `series_library` is set
+            "tmdb_show": [253, 655, 580, 1855, 314, 67198, 85949, 85948, 106393, 103516, 82491, 1992],
+        },
     ),
     "star": (
         "Star Wars Universe",
-        {"trakt_list": "https://trakt.tv/users/rzepkowski/lists/star-wars-movies?sort=rank,asc"},
+        {"trakt_list": "https://trakt.tv/users/rzepkowski/lists/star-wars-movies?sort=rank,asc",
+            "tmdb_show": [82856, 83867, 115036, 92830, 114461, 114479, 202879, 4194, 60554, 105971, 79093, 114478],
+        },
     ),
     "wizard": ("Wizarding World", {"tmdb_collection": [1241, 435259]}),
 }
@@ -214,6 +219,11 @@ def _universe(media_type: MediaType, variables: dict[str, Any]) -> Optional[dict
             "sync_mode": "sync",
             "collection_order": "release",
         }
+        if variables.get("series_library"):
+            # Movies and series in one collection (Jellyfin boxsets can hold both)
+            collections[_format_name(variables, key, default_name, default_name)]["include_series"] = str(
+                variables["series_library"]
+            )
 
     return {"collections": collections}
 

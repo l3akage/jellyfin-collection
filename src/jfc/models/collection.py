@@ -264,6 +264,8 @@ class CollectionConfig(BaseModel):
 
     # When false, only labels are maintained (no Jellyfin collection is created)
     build_collection: bool = True
+    # Mixed movie + series collection: name of the series library whose matches are added as well
+    include_series: Optional[str] = None
     delete_below_minimum: bool = False
 
     # JFC extension: collection group (e.g. "IMDb", "Filmreihen"). Collections of a group sort

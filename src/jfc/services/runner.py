@@ -348,6 +348,7 @@ class Runner:
                         library_name=library_name,
                         library_id=library_id,
                         media_type=media_type,
+                        series_library=self._series_library(config, library_id_map),
                     )
 
                     # Collect trending items for Telegram notification
@@ -594,6 +595,18 @@ class Runner:
             await StatusTagService(self.jellyfin, self.tmdb, settings, dry_run=self.dry_run).run(library_id)
         except Exception as e:
             logger.error(f"status_tags failed: {e!r}")
+
+    @staticmethod
+    def _series_library(config, library_id_map: dict[str, str]):
+        """(name, id) of the series library a mixed collection also draws from."""
+        name = getattr(config, "include_series", None)
+        if not name:
+            return None
+        lib_id = library_id_map.get(name)
+        if not lib_id:
+            logger.warning(f"'{config.name}': series library '{name}' not found, movies only")
+            return None
+        return (name, lib_id)
 
     def _infer_media_type(self, library_name: str) -> MediaType:
         """Infer media type from library name."""

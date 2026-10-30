@@ -478,6 +478,7 @@ class KometaParser:
             delete_below_minimum=self._as_bool(config.get("delete_below_minimum", False)),
             delete_not_scheduled=self._as_bool(config.get("delete_not_scheduled", False)),
             build_collection=self._as_bool(config.get("build_collection", True)),
+            include_series=(str(config["include_series"]) if config.get("include_series") else None),
             schedule=schedule,
             filters=filters,
             # Builder sources

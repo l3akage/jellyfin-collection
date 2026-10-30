@@ -327,3 +327,15 @@ def test_group_sort_name_orders_by_configured_groups():
     assert builder._group_sort_name(CollectionConfig(name="Plain")) is None
     assert builder._group_sort_name(CollectionConfig(name="Own", group="IMDb", sort_title="!A Own")) == "00 IMDb - !A Own"
     assert builder._group_sort_name(CollectionConfig(name="Own", sort_title="!A Own")) == "!A Own"
+
+
+def test_universe_mixed_with_series_library() -> None:
+    from jfc.models.media import MediaType
+    from jfc.parsers.defaults import build_default_collections
+
+    doc = build_default_collections("universe", MediaType.MOVIE, {"series_library": "Serien"})
+    assert doc["collections"]["Star Trek Universe"]["include_series"] == "Serien"
+    assert 253 in doc["collections"]["Star Trek Universe"]["tmdb_show"]
+
+    plain = build_default_collections("universe", MediaType.MOVIE, {})
+    assert "include_series" not in plain["collections"]["Star Trek Universe"]

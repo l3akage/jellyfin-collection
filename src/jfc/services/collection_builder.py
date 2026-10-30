@@ -110,6 +110,7 @@ class CollectionBuilder:
         library_name: str,
         library_id: str,
         media_type: MediaType,
+        series_library: Optional[tuple[str, str]] = None,
     ) -> tuple[Collection, CollectionReport]:
         """
         Build a collection from configuration.
@@ -136,6 +137,12 @@ class CollectionBuilder:
 
         # Fetch items from providers
         items = await self._fetch_items(config, library_id, media_type)
+        # Mixed collection: the same sources are queried for series and matched in the series library
+        series_ids: set[int] = set()
+        if series_library and media_type == MediaType.MOVIE and not (config.plex_all or config.plex_search):
+            series_items = await self._fetch_items(config, series_library[1], MediaType.SERIES)
+            series_ids = {id(i) for i in series_items}
+            items = items + series_items
         report.items_fetched = len(items)
         report.fetched_titles = [item.title for item in items]
 
@@ -176,6 +183,8 @@ class CollectionBuilder:
                     library_id=library_id,
                     library_name=library_name,
                 )
+            elif id(item) in series_ids and series_library:
+                lib_item = await self.matcher.find_in_library(item, series_library[1])
             else:
                 lib_item = await self.matcher.find_in_library(item, library_id)
 
