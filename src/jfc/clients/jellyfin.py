@@ -47,6 +47,7 @@ def apply_detail_fields(target: LibraryItem, item: dict[str, Any]) -> None:
         except ValueError:
             pass
 
+    target.tmdb_collection_id = _safe_int((item.get("ProviderIds") or {}).get("TmdbCollection"))
     target.tags = [t for t in (item.get("Tags") or []) if t]
     target.studios = [s.get("Name") for s in (item.get("Studios") or []) if s.get("Name")]
     target.status = item.get("Status")

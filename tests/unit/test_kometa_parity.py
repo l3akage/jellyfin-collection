@@ -200,3 +200,32 @@ class TestDefaults:
         result = KometaParser(tmp_path).get_all_collections()
         assert [c.name for c in result["Serien"]] == ["Netflix Shows"]
         assert result["Serien"][0].tmdb_discover["with_watch_providers"] == [8]
+
+
+class TestDynamic:
+    def test_tmdb_collection_placeholder_and_instance(self, tmp_path: Path):
+        parser = KometaParser(tmp_path)
+        path = tmp_path / "c.yml"
+        path.write_text(
+            """
+templates:
+  collection:
+    optional: [value]
+    tmdb_collection_details: <<value>>
+    sync_mode: sync
+    minimum_items: 3
+dynamic_collections:
+  TMDb Collections:
+    template: collection
+    type: tmdb_collection
+    remove_suffix: Collection
+""",
+            encoding="utf-8",
+        )
+        placeholder = parser.parse_collection_file(path)[0]
+        assert placeholder.dynamic_type == "tmdb_collection"
+        assert parser.dynamic_minimum(placeholder.dynamic_spec) == 3
+
+        instance = parser.build_dynamic_instance(placeholder.dynamic_spec, 10, "Star Wars")
+        assert instance.name == "Star Wars"
+        assert instance.tmdb_collection == [10]

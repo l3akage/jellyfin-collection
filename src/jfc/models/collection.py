@@ -266,6 +266,10 @@ class CollectionConfig(BaseModel):
     build_collection: bool = True
     delete_below_minimum: bool = False
 
+    # Kometa dynamic_collections placeholder: expanded into real collections at run time
+    dynamic_type: Optional[str] = None
+    dynamic_spec: dict[str, Any] = Field(default_factory=dict)
+
     # Remote poster (Kometa url_poster)
     url_poster: Optional[str] = None
 

@@ -470,6 +470,52 @@ class CollectionBuilder:
 
         return (len(to_add_list), len(to_remove_list), poster_path)
 
+    async def expand_dynamic(
+        self,
+        parser: Any,
+        config: CollectionConfig,
+        library_id: str,
+        media_type: MediaType,
+    ) -> list[CollectionConfig]:
+        """
+        Expand a Kometa `dynamic_collections` entry of `type: tmdb_collection` into one collection
+        per TMDb franchise with enough movies in the library (franchise = Jellyfin provider id
+        `TmdbCollection`).
+        """
+        if config.dynamic_type != "tmdb_collection" or media_type != MediaType.MOVIE:
+            return []
+
+        spec = config.dynamic_spec
+        minimum = parser.dynamic_minimum(spec)
+        excluded = {str(x) for x in (spec.get("exclude") or [])}
+        included = {str(x) for x in (spec.get("include") or [])}
+
+        counts: dict[int, int] = {}
+        for item in await self.get_detailed_library(library_id, media_type):
+            if item.tmdb_collection_id:
+                counts[item.tmdb_collection_id] = counts.get(item.tmdb_collection_id, 0) + 1
+
+        candidates = [
+            cid for cid, n in sorted(counts.items())
+            if n >= minimum and str(cid) not in excluded and (not included or str(cid) in included)
+        ]
+        logger.info(f"[Dynamic] '{config.name}': {len(candidates)} TMDb franchises with >= {minimum} movies")
+
+        remove_suffix = str(spec.get("remove_suffix") or "")
+        remove_prefix = str(spec.get("remove_prefix") or "")
+        results: list[CollectionConfig] = []
+        for cid in candidates:
+            details = await self.tmdb.get_collection_details(cid)
+            if not details:
+                continue
+            title = details[0]
+            if remove_suffix and title.endswith(remove_suffix):
+                title = title[: -len(remove_suffix)].rstrip()
+            if remove_prefix and title.startswith(remove_prefix):
+                title = title[len(remove_prefix):].lstrip()
+            results.append(parser.build_dynamic_instance(spec, cid, title))
+        return results
+
     async def delete_collection_by_name(self, name: str) -> int:
         """Delete every Jellyfin collection with this name (seasonal collections out of season)."""
         if self.dry_run:

@@ -347,6 +347,7 @@ class Settings(BaseSettings):
     radarr_quality_profile: str = Field(default="HD-1080p")
     radarr_default_tag: str = Field(default="jfc")
     radarr_only_released: bool = Field(default=False)
+    radarr_add_missing: bool = Field(default=True)
 
     # Sonarr
     sonarr_url: str = Field(default="http://localhost:8989")
@@ -354,6 +355,7 @@ class Settings(BaseSettings):
     sonarr_root_folder: str = Field(default="/tv")
     sonarr_quality_profile: str = Field(default="HD-1080p")
     sonarr_default_tag: str = Field(default="jfc")
+    sonarr_add_missing: bool = Field(default=True)
 
     # Discord
     discord_webhook_url: Optional[str] = Field(default=None)
@@ -518,6 +520,7 @@ class Settings(BaseSettings):
             quality_profile=self.radarr_quality_profile,
             default_tag=self.radarr_default_tag,
             only_released=self.radarr_only_released,
+            add_missing=self.radarr_add_missing,
         )
 
     @property
@@ -529,6 +532,7 @@ class Settings(BaseSettings):
             root_folder=self.sonarr_root_folder,
             quality_profile=self.sonarr_quality_profile,
             default_tag=self.sonarr_default_tag,
+            add_missing=self.sonarr_add_missing,
         )
 
     @property

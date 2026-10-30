@@ -581,6 +581,16 @@ class TMDbClient(BaseClient):
         movies.sort(key=lambda m: (m.release_date is None, m.release_date))
         return movies
 
+    async def get_collection_details(self, collection_id: int) -> Optional[tuple[str, list[Movie]]]:
+        """(name, movies) of a TMDb collection."""
+        response = await self.get(f"/collection/{collection_id}", params=self._params())
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        data = response.json()
+        movies = [self._parse_movie(part) for part in data.get("parts", [])]
+        return str(data.get("name") or f"Collection {collection_id}"), movies
+
     async def get_director_movies(self, person_id: int) -> list[Movie]:
         """Movies a person directed (TMDb person credits, crew job = Director)."""
         response = await self.get(f"/person/{person_id}/movie_credits", params=self._params())

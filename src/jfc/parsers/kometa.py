@@ -324,9 +324,19 @@ class KometaParser:
         """
         include = config.get("include")
         if not include:
+            if str(config.get("type")) == "tmdb_collection":
+                # Expanded per TMDb franchise found in the library at run time (see
+                # CollectionBuilder.expand_dynamic)
+                return [
+                    CollectionConfig(
+                        name=mapping_name,
+                        dynamic_type="tmdb_collection",
+                        dynamic_spec=copy.deepcopy(config),
+                    )
+                ]
             logger.warning(
-                f"dynamic_collections '{mapping_name}' needs a runtime provider and is skipped "
-                "(only entries with an explicit include list are expanded)"
+                f"dynamic_collections '{mapping_name}' (type {config.get('type')}) is not supported "
+                "and is skipped"
             )
             return []
 
@@ -347,6 +357,34 @@ class KometaParser:
             except Exception as e:
                 logger.error(f"Failed to parse dynamic collection '{collection_name}': {e}")
         return results
+
+    def dynamic_minimum(self, spec: dict[str, Any]) -> int:
+        """minimum_items of a dynamic collection spec (its template, else 2)."""
+        for template_spec in self._template_specs(spec):
+            body = self._raw_templates.get(str(template_spec.get("name"))) or {}
+            if body.get("minimum_items") is not None:
+                return int(body["minimum_items"])
+        return int(spec.get("minimum_items") or 2)
+
+    def build_dynamic_instance(
+        self,
+        spec: dict[str, Any],
+        key: Any,
+        title: str,
+        extra: Optional[dict[str, Any]] = None,
+    ) -> CollectionConfig:
+        """One concrete collection of a dynamic spec (template vars: key, value, title, ...)."""
+        raw: dict[str, Any] = {}
+        template = spec.get("template")
+        if isinstance(template, str):
+            template = {"name": template}
+        if isinstance(template, dict):
+            raw["template"] = {**template, "key": key, "value": key, "title": title, "key_name": title, **(extra or {})}
+        elif isinstance(template, list):
+            raw["template"] = [{**t, "key": key, "value": key, "title": title, **(extra or {})} for t in template if isinstance(t, dict)]
+        if spec.get("type") == "tmdb_collection":
+            raw.setdefault("tmdb_collection", [key])
+        return self._parse_collection(title, raw)
 
     # ------------------------------------------------------------------
     # Collection parsing
@@ -803,6 +841,19 @@ class KometaParser:
                     collection.radarr_tag = radarr_config["tag"]
                 if radarr_config.get("quality_profile"):
                     collection.radarr_quality_profile = radarr_config["quality_profile"]
+
+            # Kometa-style add_missing (library `radarr:`/`sonarr:` or top-level section)
+            for collection in collections:
+                if collection.radarr_add_missing is None:
+                    value = self._optional_bool(
+                        radarr_config.get("add_missing", (config.get("radarr") or {}).get("add_missing"))
+                    )
+                    collection.radarr_add_missing = value
+                if collection.sonarr_add_missing is None:
+                    value = self._optional_bool(
+                        sonarr_config.get("add_missing", (config.get("sonarr") or {}).get("add_missing"))
+                    )
+                    collection.sonarr_add_missing = value
 
             result[library_name] = collections
             logger.info(f"Library '{library_name}': {len(collections)} collections")

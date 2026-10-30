@@ -113,6 +113,7 @@ class LibraryItem(BaseModel):
     tmdb_id: Optional[int] = None
     imdb_id: Optional[str] = None
     tvdb_id: Optional[int] = None
+    tmdb_collection_id: Optional[int] = None  # franchise ("TmdbCollection" provider id)
 
     # Library info
     library_id: str

@@ -295,6 +295,20 @@ class Runner:
                 run_report.libraries.append(library_report)
                 continue
 
+            # Expand Kometa dynamic_collections (e.g. one collection per TMDb franchise)
+            expanded: list = []
+            for config in collection_configs:
+                if config.dynamic_type:
+                    try:
+                        expanded.extend(
+                            await self.builder.expand_dynamic(self.parser, config, library_id, media_type)
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to expand dynamic collection '{config.name}': {e}")
+                else:
+                    expanded.append(config)
+            collection_configs = expanded
+
             # Process collections
             for config in collection_configs:
                 # Filter by specified collections
