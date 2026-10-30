@@ -71,9 +71,14 @@ class StatusTagSettings:
         for key, value in data.items():
             normalized = {"process_new_show": "process_new_shows"}.get(key, key)
             if hasattr(settings, normalized) and value is not None:
-                expected = type(getattr(settings, normalized))
+                default = getattr(settings, normalized)
                 try:
-                    setattr(settings, normalized, expected(value) if expected is not bool else bool(value))
+                    if default is None or isinstance(default, str):
+                        setattr(settings, normalized, str(value))
+                    elif isinstance(default, bool):
+                        setattr(settings, normalized, bool(value))
+                    else:
+                        setattr(settings, normalized, int(value))
                 except (TypeError, ValueError):
                     logger.warning(f"status_tags: invalid value for '{key}': {value!r}")
         return settings

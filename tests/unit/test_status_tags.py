@@ -81,8 +81,11 @@ def test_ignore_finales_tag_and_status_tags():
 
 
 def test_settings_from_dict_and_tag_name():
-    settings = StatusTagSettings.from_dict({"future_days_new_season": 14, "process_canceled_shows": False, "unknown": 1})
+    settings = StatusTagSettings.from_dict(
+        {"future_days_new_season": 14, "process_canceled_shows": False, "library": "Serien", "unknown": 1}
+    )
     assert settings.future_days_new_season == 14 and settings.process_canceled_shows is False
+    assert settings.library == "Serien"
     assert tag_name("NewSeasonSoon:2:2026-11-03") == "NewSeasonSoon"
 
 
