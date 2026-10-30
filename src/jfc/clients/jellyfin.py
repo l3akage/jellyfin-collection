@@ -412,6 +412,15 @@ class JellyfinClient(BaseClient):
             return items[0] if items else None
         return None
 
+    async def refresh_library(self) -> bool:
+        """Ask Jellyfin to scan all libraries (new/removed placeholder folders)."""
+        response = await self.post("/Library/Refresh")
+        if response.status_code in (200, 204):
+            logger.info("Triggered Jellyfin library refresh")
+            return True
+        logger.warning(f"Library refresh failed: HTTP {response.status_code}")
+        return False
+
     async def update_item_tags(
         self,
         item_id: str,

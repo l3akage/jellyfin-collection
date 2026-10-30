@@ -36,9 +36,10 @@ RUN pip install --no-cache-dir .
 # -----------------------------------------------------------------------------
 FROM base AS production
 
-# Install gosu for proper privilege dropping
+# Install gosu for proper privilege dropping (and ffmpeg for the "upcoming" placeholder video)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gosu \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/* \
     && gosu nobody true
 

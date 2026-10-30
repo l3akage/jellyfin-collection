@@ -32,6 +32,7 @@ from jfc.services.poster_generator import PosterGenerator
 from jfc.services.report_generator import ReportGenerator
 from jfc.services.startup import StartupService
 from jfc.services.status_tags import StatusTagService, StatusTagSettings
+from jfc.services.upcoming import UpcomingService, UpcomingSettings
 from jfc.services.trakt_auth import TraktAuth
 
 
@@ -266,7 +267,9 @@ class Runner:
         jellyfin_libraries = await self.jellyfin.get_libraries()
         library_id_map = {lib["Name"]: lib["ItemId"] for lib in jellyfin_libraries}
 
-        # Series status tags (TSSK replacement), configured in config.yml `status_tags:`
+        # Upcoming movies/shows (UMTK replacement) and series status tags (TSSK replacement),
+        # configured in config.yml `upcoming:` / `status_tags:`
+        await self._run_upcoming(library_id_map)
         await self._run_status_tags(library_id_map)
 
         # Process each library
@@ -552,6 +555,23 @@ class Runner:
             await self.radarr.close()
         if self.sonarr:
             await self.sonarr.close()
+
+    async def _run_upcoming(self, library_id_map: dict[str, str]) -> None:
+        """Placeholders + Coming Soon tags when `upcoming:` is enabled in config.yml."""
+        settings = UpcomingSettings.from_dict(self.parser.parse_config().get("upcoming"))
+        if not settings.enabled:
+            return
+        try:
+            await UpcomingService(
+                self.jellyfin,
+                self.radarr,
+                self.sonarr,
+                settings,
+                data_dir=self.settings.get_data_path(),
+                dry_run=self.dry_run,
+            ).run(library_id_map)
+        except Exception as e:
+            logger.error(f"upcoming failed: {e}")
 
     async def _run_status_tags(self, library_id_map: dict[str, str]) -> None:
         """Write series status tags when `status_tags:` is present in config.yml."""
