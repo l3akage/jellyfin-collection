@@ -554,13 +554,13 @@ class CollectionBuilder:
         return results
 
     def _group_sort_name(self, config: CollectionConfig) -> Optional[str]:
-        """Explicit sort_title wins; otherwise grouped collections sort by group, then name."""
-        if config.sort_title or not config.group:
+        """Grouped collections sort by group first; a `sort_title` still orders them inside the group."""
+        if not config.group:
             return config.sort_title
         order = [g.lower() for g in self.group_order]
         key = config.group.lower()
         index = order.index(key) if key in order else len(order)
-        return f"{index:02d} {config.group} - {config.name}"
+        return f"{index:02d} {config.group} - {config.sort_title or config.name}"
 
     async def delete_collection_by_name(self, name: str) -> int:
         """Delete every Jellyfin collection with this name (seasonal collections out of season)."""

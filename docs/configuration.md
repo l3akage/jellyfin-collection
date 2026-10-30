@@ -499,6 +499,6 @@ libraries:
 A collection can set its own `group:` (it wins over the entry's). Collections with a
 `range(...)` schedule default to `Saisonal`, dynamic TMDb franchises to `Filmreihen`.
 
-Every grouped collection gets the group as sort title prefix (`00 IMDb - Top 250`, unless the
-collection sets `sort_title`) and as Jellyfin genre, so the Collections tab sorts by group and
+Every grouped collection gets the group as sort title prefix (`00 IMDb - Top 250`; a `sort_title`
+still orders the collections inside their group) and as Jellyfin genre, so the Collections tab sorts by group and
 can be filtered by it.

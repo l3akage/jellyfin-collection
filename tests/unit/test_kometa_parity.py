@@ -325,4 +325,5 @@ def test_group_sort_name_orders_by_configured_groups():
     assert builder._group_sort_name(CollectionConfig(name="Alien", group="Filmreihen")) == "01 Filmreihen - Alien"
     assert builder._group_sort_name(CollectionConfig(name="X", group="Other")) == "02 Other - X"
     assert builder._group_sort_name(CollectionConfig(name="Plain")) is None
-    assert builder._group_sort_name(CollectionConfig(name="Own", group="IMDb", sort_title="!A Own")) == "!A Own"
+    assert builder._group_sort_name(CollectionConfig(name="Own", group="IMDb", sort_title="!A Own")) == "00 IMDb - !A Own"
+    assert builder._group_sort_name(CollectionConfig(name="Own", sort_title="!A Own")) == "!A Own"
