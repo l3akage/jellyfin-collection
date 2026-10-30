@@ -473,3 +473,10 @@ Startup behavior flags:
 
 - [Kometa Migration](kometa-migration.md) - Migrate existing configs
 - [AI Poster Generation](ai-posters.md) - Setup AI posters
+
+## Safety limits
+
+`settings.max_removal_ratio` (default `0.5`): a sync never removes more than this share of a
+collection's items in one run (only applies from 5 removals on). A larger removal is skipped and
+logged, because it almost always means the Jellyfin library listing was incomplete. Set it to `1`
+to disable the guard.

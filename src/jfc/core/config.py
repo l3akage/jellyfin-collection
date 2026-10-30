@@ -383,6 +383,9 @@ class Settings(BaseSettings):
 
     # Application settings
     log_level: str = Field(default="INFO")
+    # A sync never removes more than this share of a collection's items at once (0-1); protects
+    # against incomplete library listings. 1 disables the guard.
+    max_removal_ratio: float = Field(default=0.5)
     matcher_preload_limit: int = Field(default=50000)
     config_path: Path = Field(default=Path("/config"))
     data_path: Path = Field(default=Path("/data"))

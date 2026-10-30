@@ -193,6 +193,9 @@ class JellyfinClient(BaseClient):
         base_params = {
             "ParentId": library_id,
             "Recursive": True,
+            # Items that are members of a collection (BoxSet) are otherwise collapsed into it and
+            # missing from the listing, which breaks matching on every run after the first one
+            "CollapseBoxSetItems": False,
             "Fields": (
                 "ProviderIds,Path,Overview,Genres,DateCreated,Tags,Studios,PremiereDate,"
                 "MediaStreams,MediaSources,CommunityRating,CriticRating,OfficialRating,"
@@ -304,6 +307,7 @@ class JellyfinClient(BaseClient):
             "searchTerm": query,
             "Limit": limit,
             "Recursive": True,
+            "CollapseBoxSetItems": False,
             "Fields": "ProviderIds,Path",
         }
 
@@ -355,6 +359,7 @@ class JellyfinClient(BaseClient):
         """
         params = {
             "Recursive": True,
+            "CollapseBoxSetItems": False,
             "Fields": "ProviderIds,Path",
         }
 

@@ -49,6 +49,8 @@ class CollectionBuilder:
     # Overridden from settings in __init__
     radarr_add_missing_default: bool = True
     sonarr_add_missing_default: bool = True
+    max_removal_ratio: float = 0.5
+    MIN_REMOVALS_FOR_GUARD = 5
 
     def __init__(
         self,
@@ -92,6 +94,7 @@ class CollectionBuilder:
         settings = get_settings()
         self.matcher = MediaMatcher(jellyfin, preload_limit=settings.matcher_preload_limit)
         self.radarr_only_released = settings.radarr_only_released
+        self.max_removal_ratio = getattr(settings, "max_removal_ratio", 0.5)
         self.radarr_add_missing_default = getattr(settings.radarr, "add_missing", True)
         self.sonarr_add_missing_default = getattr(settings.sonarr, "add_missing", True)
 
@@ -391,6 +394,23 @@ class CollectionBuilder:
                 to_remove = current_ids - target_ids
                 to_remove_list = list(to_remove)
             else:
+                to_remove = set()
+                to_remove_list = []
+
+            # Mass-removal guard: an unusually large removal usually means the library listing was
+            # incomplete, not that the collection really lost most of its items
+            if (
+                to_remove
+                and len(to_remove) >= self.MIN_REMOVALS_FOR_GUARD
+                and len(to_remove) > self.max_removal_ratio * len(current_ids)
+            ):
+                logger.warning(
+                    f"'{collection.config.name}': sync would remove {len(to_remove)} of "
+                    f"{len(current_ids)} items (limit {self.max_removal_ratio:.0%}); removals skipped. "
+                    "Check that the Jellyfin library is complete, or raise settings.max_removal_ratio."
+                )
+                target_ids_list = target_ids_list + [i for i in current_ids if i not in target_ids]
+                target_ids = set(target_ids_list)
                 to_remove = set()
                 to_remove_list = []
 

@@ -278,3 +278,50 @@ async def test_library_paging_recovers_when_retry_succeeds():
     client.get = fake_get
     JellyfinClient._PAGE_RETRY_DELAY = 0
     assert len(await client.get_library_items("lib", limit=50000)) == 1200
+
+
+@pytest.mark.asyncio
+async def test_library_queries_do_not_collapse_collection_members():
+    from unittest.mock import MagicMock
+    from jfc.clients.jellyfin import JellyfinClient
+
+    seen = []
+
+    async def fake_get(url, params=None):
+        seen.append(params)
+        return MagicMock(status_code=200, raise_for_status=lambda: None, json=lambda: {"Items": [], "TotalRecordCount": 0})
+
+    client = JellyfinClient.__new__(JellyfinClient)
+    client.get = fake_get
+    await client.get_library_items("lib")
+    await client.search_items("x")
+    await client.find_by_tmdb_id(1, library_id="lib")
+    assert seen and all(p.get("CollapseBoxSetItems") is False for p in seen)
+
+
+@pytest.mark.asyncio
+async def test_mass_removal_is_blocked():
+    builder = make_builder([])
+    builder.max_removal_ratio = 0.5
+    current = [f"old{i}" for i in range(20)]
+    builder.jellyfin.get_collections = AsyncMock(return_value=[{"Name": "DV", "Id": "c1", "ChildCount": 20}])
+    builder.jellyfin.get_collection_items = AsyncMock(return_value=current)
+    builder.jellyfin.remove_from_collection = AsyncMock(return_value=True)
+    builder.jellyfin.add_to_collection = AsyncMock(return_value=True)
+    builder.jellyfin.update_collection_metadata = AsyncMock(return_value=True)
+    builder._upload_poster = AsyncMock(return_value=(None, None))
+    config = CollectionConfig(name="DV", plex_all=True)  # library query: empty result is valid, but huge removal is not
+    collection = Collection(
+        config=config, library_name="F", library_id="L",
+        items=[CollectionItem(title="n", jellyfin_id="new1", matched=True), CollectionItem(title="m", jellyfin_id="old0", matched=True)],
+    )
+    collection.update_stats()
+    builder.radarr = None
+    builder.sonarr = None
+    report = CollectionReport(name="DV", library="F", schedule="daily", source_provider="x")
+    await builder.sync_collection(collection, report)
+
+    # the 19 items that would have been removed are kept (reorder path re-adds the full list)
+    final = builder.jellyfin.add_to_collection.await_args_list[-1].args[1]
+    assert set(current) <= set(final) and "new1" in final
+    assert report.items_removed_from_collection == 0
