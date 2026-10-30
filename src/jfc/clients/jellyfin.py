@@ -421,6 +421,23 @@ class JellyfinClient(BaseClient):
         logger.warning(f"Library refresh failed: HTTP {response.status_code}")
         return False
 
+    # Everything the Jellyfin web client loads before saving an item. POST /Items/{id} replaces
+    # all of these, so anything missing here would be reset (e.g. LockData / LockedFields live
+    # behind "Settings").
+    _ITEM_UPDATE_FIELDS = (
+        "Overview,SortName,ForcedSortName,DisplayOrder,Tags,Genres,People,Studios,ProviderIds,"
+        "DateCreated,Taglines,OriginalTitle,CustomRating,AirTime,Settings,ProductionLocations,"
+        "RemoteTrailers"
+    )
+
+    async def get_item_for_update(self, item_id: str) -> Optional[dict[str, Any]]:
+        """Full item DTO suitable for posting back to /Items/{id}."""
+        response = await self.get("/Items", params={"Ids": item_id, "Fields": self._ITEM_UPDATE_FIELDS})
+        if response.status_code != 200:
+            return None
+        items = response.json().get("Items", [])
+        return items[0] if items else None
+
     async def update_item_tags(
         self,
         item_id: str,
@@ -434,7 +451,7 @@ class JellyfinClient(BaseClient):
         """
         add = add or []
         remove = remove or []
-        item = await self.get_collection(item_id)  # generic item fetch with full DTO fields
+        item = await self.get_item_for_update(item_id)
         if not item:
             logger.warning(f"Cannot update tags: item {item_id} not found")
             return False

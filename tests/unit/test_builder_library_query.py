@@ -173,3 +173,31 @@ async def test_below_minimum_deletes_only_with_some_matches():
     none.update_stats()
     await builder.sync_collection(none, CollectionReport(name="T", library="F", schedule="daily", source_provider="x"))
     builder.jellyfin.delete_collection.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_item_tags_posts_full_dto_and_only_when_changed():
+    from unittest.mock import MagicMock
+    from jfc.clients.jellyfin import JellyfinClient
+
+    client = JellyfinClient.__new__(JellyfinClient)
+    dto = {"Id": "1", "Name": "Show", "Tags": ["A", "Old"], "LockData": True, "LockedFields": ["Name"], "CommunityRating": 7.4}
+    client.get_item_for_update = AsyncMock(return_value=dto)
+    posted = {}
+
+    async def post(url, json=None):
+        posted["url"], posted["json"] = url, json
+        return MagicMock(status_code=204)
+
+    client.post = post
+    assert await client.update_item_tags("1", add=["New", "a"], remove=["old"])
+    assert posted["url"] == "/Items/1"
+    assert posted["json"]["Tags"] == ["A", "New"]
+    # untouched properties travel along unchanged
+    assert posted["json"]["LockData"] is True and posted["json"]["CommunityRating"] == 7.4
+
+    # already in the desired state: nothing is posted
+    posted.clear()
+    client.get_item_for_update = AsyncMock(return_value={"Id": "1", "Tags": ["A", "New"]})
+    assert await client.update_item_tags("1", add=["New"], remove=["Gone"])
+    assert posted == {}
