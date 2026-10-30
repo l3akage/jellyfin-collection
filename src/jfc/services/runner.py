@@ -252,6 +252,7 @@ class Runner:
 
         # Parse all collections
         all_collections = self.parser.get_all_collections()
+        self.builder.group_order = self.parser.collection_group_order()
 
         # Filter by specified libraries
         if libraries:

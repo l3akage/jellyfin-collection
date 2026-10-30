@@ -673,6 +673,7 @@ class JellyfinClient(BaseClient):
         overview: Optional[str] = None,
         sort_name: Optional[str] = None,
         display_order: Optional[str] = None,
+        genres: Optional[list[str]] = None,
     ) -> bool:
         """
         Update collection metadata.
@@ -683,6 +684,7 @@ class JellyfinClient(BaseClient):
             overview: New description
             sort_name: Sort title
             display_order: Display order for items (e.g., "SortName", "PremiereDate", "DateCreated")
+            genres: Genres of the collection itself (used as group labels)
 
         Returns:
             True if successful
@@ -702,6 +704,8 @@ class JellyfinClient(BaseClient):
             collection["ForcedSortName"] = sort_name
         if display_order:
             collection["DisplayOrder"] = display_order
+        if genres is not None:
+            collection["Genres"] = genres
 
         response = await self.post(f"/Items/{collection_id}", json=collection)
 

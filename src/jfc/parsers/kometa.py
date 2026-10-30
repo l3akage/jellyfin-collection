@@ -18,11 +18,15 @@ from jfc.models.collection import (
     CollectionOrder,
     CollectionSchedule,
     CollectionTemplate,
+    ScheduleType,
     SyncMode,
 )
 
 
 _DROP = object()
+
+# Group of the built-in Kometa defaults (`- default: <name>`)
+DEFAULT_GROUPS = {"imdb": "IMDb", "network": "Netzwerke", "streaming": "Streaming", "universe": "Universen"}
 
 
 class _OptionalMissing(Exception):
@@ -92,6 +96,7 @@ class KometaParser:
                     {
                         "file": cf["file"],
                         "template_variables": cf.get("template_variables") or {},
+                        "group": cf.get("group"),
                     }
                 )
             elif isinstance(cf, dict) and "default" in cf:
@@ -99,6 +104,7 @@ class KometaParser:
                     {
                         "default": cf["default"],
                         "template_variables": cf.get("template_variables") or {},
+                        "group": cf.get("group"),
                     }
                 )
             elif isinstance(cf, str):
@@ -363,6 +369,23 @@ class KometaParser:
                 logger.error(f"Failed to parse dynamic collection '{collection_name}': {e}")
         return results
 
+    @staticmethod
+    def _apply_group(collections: list[CollectionConfig], group: Optional[str]) -> None:
+        """Entry level group for collections that do not set their own; seasonal ones default to
+        "Saisonal"."""
+        for collection in collections:
+            if collection.group:
+                continue
+            if group:
+                collection.group = str(group)
+            elif collection.schedule.schedule_type == ScheduleType.RANGE:
+                collection.group = "Saisonal"
+
+    def collection_group_order(self) -> list[str]:
+        """`collection_groups:` of config.yml (order of the groups in the Collections tab)."""
+        value = self.parse_config().get("collection_groups")
+        return [str(v) for v in value] if isinstance(value, list) else []
+
     def dynamic_minimum(self, spec: dict[str, Any]) -> int:
         """minimum_items of a dynamic collection spec (its template, else 2)."""
         for template_spec in self._template_specs(spec):
@@ -389,7 +412,10 @@ class KometaParser:
             raw["template"] = [{**t, "key": key, "value": key, "title": title, **(extra or {})} for t in template if isinstance(t, dict)]
         if spec.get("type") == "tmdb_collection":
             raw.setdefault("tmdb_collection", [key])
-        return self._parse_collection(title, raw)
+        instance = self._parse_collection(title, raw)
+        if not instance.group:
+            instance.group = str(spec["group"]) if spec.get("group") else "Filmreihen"
+        return instance
 
     # ------------------------------------------------------------------
     # Collection parsing
@@ -440,6 +466,7 @@ class KometaParser:
             name=name,
             summary=config.get("summary"),
             sort_title=config.get("sort_title"),
+            group=(str(config["group"]).strip() or None) if config.get("group") else None,
             poster=config.get("poster"),
             url_poster=config.get("url_poster"),
             collection_order=collection_order,
@@ -818,9 +845,11 @@ class KometaParser:
                             f"Library '{library_name}': Kometa default '{entry['default']}' is not supported, skipped"
                         )
                         continue
-                    collections.extend(
-                        self.parse_collection_data(default_data, source=f"default:{entry['default']}")
+                    parsed_defaults = self.parse_collection_data(default_data, source=f"default:{entry['default']}")
+                    self._apply_group(
+                        parsed_defaults, entry.get("group") or DEFAULT_GROUPS.get(str(entry["default"]).lower())
                     )
+                    collections.extend(parsed_defaults)
                     continue
 
                 cf_path = entry["file"]
@@ -829,7 +858,9 @@ class KometaParser:
                     cf_path = cf_path.replace("config/", "", 1)
 
                 full_path = self.config_path / cf_path
-                collections.extend(self.parse_collection_file(full_path, variables))
+                parsed_file = self.parse_collection_file(full_path, variables)
+                self._apply_group(parsed_file, entry.get("group"))
+                collections.extend(parsed_file)
 
             # Apply library-level Sonarr/Radarr settings to each collection
             sonarr_config = parsed.get("sonarr") or {}

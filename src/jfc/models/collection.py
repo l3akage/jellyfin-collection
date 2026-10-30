@@ -266,6 +266,10 @@ class CollectionConfig(BaseModel):
     build_collection: bool = True
     delete_below_minimum: bool = False
 
+    # JFC extension: collection group (e.g. "IMDb", "Filmreihen"). Collections of a group sort
+    # together and carry the group as Jellyfin genre, so the Collections tab can be filtered by it.
+    group: Optional[str] = None
+
     # Kometa dynamic_collections placeholder: expanded into real collections at run time
     dynamic_type: Optional[str] = None
     dynamic_spec: dict[str, Any] = Field(default_factory=dict)

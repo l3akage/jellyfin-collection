@@ -480,3 +480,25 @@ Startup behavior flags:
 collection's items in one run (only applies from 5 removals on). A larger removal is skipped and
 logged, because it almost always means the Jellyfin library listing was incomplete. Set it to `1`
 to disable the guard.
+
+## Collection groups
+
+Jellyfin has no folders for collections. JFC groups them instead:
+
+```yaml
+collection_groups: [IMDb, Universen, Sammlungen, Filmreihen, Streaming, Saisonal]   # order in the Collections tab
+
+libraries:
+  Filme:
+    collection_files:
+      - default: imdb                  # group "IMDb" (built-in defaults: IMDb, Universen, Streaming, Netzwerke)
+      - file: config/Movie Collections.yml
+        group: Sammlungen              # group of every collection of this file ...
+```
+
+A collection can set its own `group:` (it wins over the entry's). Collections with a
+`range(...)` schedule default to `Saisonal`, dynamic TMDb franchises to `Filmreihen`.
+
+Every grouped collection gets the group as sort title prefix (`00 IMDb - Top 250`, unless the
+collection sets `sort_title`) and as Jellyfin genre, so the Collections tab sorts by group and
+can be filtered by it.

@@ -51,6 +51,7 @@ class CollectionBuilder:
     sonarr_add_missing_default: bool = True
     max_removal_ratio: float = 0.5
     MIN_REMOVALS_FOR_GUARD = 5
+    group_order: list = []  # configured `collection_groups`; set by the runner
 
     def __init__(
         self,
@@ -486,8 +487,9 @@ class CollectionBuilder:
             await self.jellyfin.update_collection_metadata(
                 collection.jellyfin_id,
                 overview=collection.config.summary,
-                sort_name=collection.config.sort_title,
+                sort_name=self._group_sort_name(collection.config),
                 display_order=display_order,
+                genres=[collection.config.group] if collection.config.group else None,
             )
 
         # Upload poster (manual or AI-generated)
@@ -550,6 +552,15 @@ class CollectionBuilder:
                 title = title[len(remove_prefix):].lstrip()
             results.append(parser.build_dynamic_instance(spec, cid, title))
         return results
+
+    def _group_sort_name(self, config: CollectionConfig) -> Optional[str]:
+        """Explicit sort_title wins; otherwise grouped collections sort by group, then name."""
+        if config.sort_title or not config.group:
+            return config.sort_title
+        order = [g.lower() for g in self.group_order]
+        key = config.group.lower()
+        index = order.index(key) if key in order else len(order)
+        return f"{index:02d} {config.group} - {config.name}"
 
     async def delete_collection_by_name(self, name: str) -> int:
         """Delete every Jellyfin collection with this name (seasonal collections out of season)."""

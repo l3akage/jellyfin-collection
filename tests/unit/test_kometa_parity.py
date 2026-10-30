@@ -264,3 +264,65 @@ collections:
         client = TMDbClient.__new__(TMDbClient)
         series = client._parse_series({"id": 1, "name": "X", "origin_country": [], "genre_ids": []})
         assert series.original_country is None
+
+
+class TestGroups:
+    def test_default_entry_and_collection_groups(self, tmp_path: Path):
+        (tmp_path / "Own.yml").write_text(
+            """
+collections:
+  4K Dolby Vision:
+    group: Qualität
+    plex_all: true
+  Studio Ghibli:
+    trakt_list: https://trakt.tv/users/a/lists/b
+  Halloween:
+    schedule: range(10/01-10/31)
+    tmdb_movie: 1
+""",
+            encoding="utf-8",
+        )
+        (tmp_path / "config.yml").write_text(
+            yaml.safe_dump(
+                {
+                    "collection_groups": ["IMDb", "Sammlungen"],
+                    "libraries": {
+                        "Filme": {
+                            "collection_files": [
+                                {"default": "imdb"},
+                                {"default": "universe", "group": "Reihen"},
+                                {"file": "Own.yml", "group": "Sammlungen"},
+                            ]
+                        }
+                    },
+                }
+            )
+        )
+        parser = KometaParser(tmp_path)
+        by_name = {c.name: c.group for c in parser.get_all_collections()["Filme"]}
+        assert by_name["IMDb Top 250 Movies"] == "IMDb"          # built-in default group
+        assert by_name["Marvel Cinematic Universe"] == "Reihen"  # entry override
+        assert by_name["4K Dolby Vision"] == "Qualität"          # collection beats entry
+        assert by_name["Studio Ghibli"] == "Sammlungen"          # entry group
+        assert by_name["Halloween"] == "Sammlungen"              # entry group beats the seasonal default
+        assert parser.collection_group_order() == ["IMDb", "Sammlungen"]
+
+    def test_seasonal_and_dynamic_defaults(self, tmp_path: Path):
+        c = _parse(tmp_path, "collections:\n  X:\n    schedule: range(01/01-01/02)\n    tmdb_movie: 1\n")[0]
+        KometaParser._apply_group([c], None)
+        assert c.group == "Saisonal"
+        parser = KometaParser(tmp_path)
+        assert parser.build_dynamic_instance({"template": None, "type": "tmdb_collection"}, 5, "Star Wars").group == "Filmreihen"
+
+
+def test_group_sort_name_orders_by_configured_groups():
+    from jfc.models.collection import CollectionConfig
+    from jfc.services.collection_builder import CollectionBuilder
+
+    builder = CollectionBuilder.__new__(CollectionBuilder)
+    builder.group_order = ["IMDb", "Filmreihen"]
+    assert builder._group_sort_name(CollectionConfig(name="Top", group="IMDb")) == "00 IMDb - Top"
+    assert builder._group_sort_name(CollectionConfig(name="Alien", group="Filmreihen")) == "01 Filmreihen - Alien"
+    assert builder._group_sort_name(CollectionConfig(name="X", group="Other")) == "02 Other - X"
+    assert builder._group_sort_name(CollectionConfig(name="Plain")) is None
+    assert builder._group_sort_name(CollectionConfig(name="Own", group="IMDb", sort_title="!A Own")) == "!A Own"
