@@ -572,7 +572,7 @@ class Runner:
                 dry_run=self.dry_run,
             ).run(library_id_map)
         except Exception as e:
-            logger.error(f"upcoming failed: {e}")
+            logger.error(f"upcoming failed: {e!r}")
 
     async def _run_status_tags(self, library_id_map: dict[str, str]) -> None:
         """Write series status tags when `status_tags:` is present in config.yml."""
@@ -592,7 +592,7 @@ class Runner:
         try:
             await StatusTagService(self.jellyfin, self.tmdb, settings, dry_run=self.dry_run).run(library_id)
         except Exception as e:
-            logger.error(f"status_tags failed: {e}")
+            logger.error(f"status_tags failed: {e!r}")
 
     def _infer_media_type(self, library_name: str) -> MediaType:
         """Infer media type from library name."""

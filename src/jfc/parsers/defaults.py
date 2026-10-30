@@ -78,16 +78,24 @@ def _imdb(media_type: MediaType, variables: dict[str, Any]) -> dict[str, Any]:
     is_movie = media_type == MediaType.MOVIE
     collections: dict[str, Any] = {}
 
+    # IMDb sometimes answers its chart pages with a bot challenge. `top_list` / `popular_list`
+    # (a Trakt or MDBList list URL) replace the chart in that case.
+    def source(chart_id: str, limit: int, alternative: Any) -> dict[str, Any]:
+        if alternative:
+            url = str(alternative)
+            return {"mdblist_list": url} if "mdblist.com" in url else {"trakt_list": url}
+        return {"imdb_chart": {"list_ids": [chart_id], "limit": limit}}
+
     top_name = str(variables.get("name_top") or ("IMDb Top 250 Movies" if is_movie else "IMDb Top 250 TV"))
     collections[top_name] = {
-        "imdb_chart": {"list_ids": ["top" if is_movie else "toptv"], "limit": 250},
+        **source("top" if is_movie else "toptv", 250, variables.get("top_list")),
         "sync_mode": "sync",
         "collection_order": "custom",
     }
 
     popular_name = str(variables.get("name_popular") or ("IMDb Popular" if is_movie else "IMDb Popular"))
     collections[popular_name] = {
-        "imdb_chart": {"list_ids": ["moviemeter" if is_movie else "tvmeter"], "limit": 100},
+        **source("moviemeter" if is_movie else "tvmeter", 100, variables.get("popular_list")),
         "sync_mode": "sync",
         "collection_order": "custom",
     }

@@ -1,6 +1,8 @@
 """Jellyfin API client for managing collections and media."""
 
 import base64
+
+import httpx
 import mimetypes
 import re
 from datetime import date, datetime
@@ -469,8 +471,16 @@ class JellyfinClient(BaseClient):
             return True
 
         item["Tags"] = desired
-        response = await self.post(f"/Items/{item_id}", json=item)
-        if response.status_code == 204:
+        response = None
+        for attempt in (1, 2):
+            try:
+                response = await self.post(f"/Items/{item_id}", json=item)
+                break
+            except httpx.TimeoutException:
+                if attempt == 2:
+                    raise
+                logger.debug(f"Timeout updating tags of {item_id}, retrying")
+        if response is not None and response.status_code == 204:
             return True
 
         logger.error(f"Failed to update tags on {item_id}: HTTP {response.status_code}")

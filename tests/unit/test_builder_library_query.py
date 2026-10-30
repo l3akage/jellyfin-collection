@@ -201,3 +201,23 @@ async def test_update_item_tags_posts_full_dto_and_only_when_changed():
     client.get_item_for_update = AsyncMock(return_value={"Id": "1", "Tags": ["A", "New"]})
     assert await client.update_item_tags("1", add=["New"], remove=["Gone"])
     assert posted == {}
+
+
+@pytest.mark.asyncio
+async def test_empty_provider_result_changes_nothing():
+    builder = make_builder([])
+    builder.jellyfin.get_collections = AsyncMock(return_value=[{"Name": "IMDb", "Id": "c1", "ChildCount": 250}])
+    builder.jellyfin.get_collection_items = AsyncMock(return_value=["a"] * 250)
+    builder.jellyfin.remove_from_collection = AsyncMock(return_value=True)
+    builder.jellyfin.create_collection = AsyncMock()
+    config = CollectionConfig(name="IMDb")  # provider based, e.g. imdb_chart blocked by IMDb
+    empty = Collection(config=config, library_name="F", library_id="L", items=[])
+    empty.update_stats()
+    report = CollectionReport(name="IMDb", library="F", schedule="daily", source_provider="x")
+    assert await builder.sync_collection(empty, report) == (0, 0, None)
+    builder.jellyfin.remove_from_collection.assert_not_awaited()
+
+    # no existing collection: no empty collection is created either
+    builder.jellyfin.get_collections = AsyncMock(return_value=[])
+    await builder.sync_collection(empty, report)
+    builder.jellyfin.create_collection.assert_not_awaited()

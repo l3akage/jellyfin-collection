@@ -802,7 +802,7 @@ class TMDbClient(BaseClient):
             overview=data.get("overview"),
             genres=genre_ids,  # Store genre IDs for filtering
             original_language=data.get("original_language"),
-            original_country=data.get("origin_country", [None])[0],
+            original_country=(data.get("origin_country") or [None])[0],
             vote_average=data.get("vote_average"),
             vote_count=data.get("vote_count"),
             popularity=data.get("popularity"),

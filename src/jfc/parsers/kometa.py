@@ -185,7 +185,12 @@ class KometaParser:
                 visible_home=config.get("visible_home", False),
                 visible_shared=config.get("visible_shared", False),
                 filters=self._parse_filters(config.get("filters") or {}),
-                schedule=CollectionSchedule.from_kometa(config.get("schedule")),
+                # No schedule in the template means "daily", not "never"
+                schedule=(
+                    CollectionSchedule.from_kometa(str(config["schedule"]))
+                    if config.get("schedule")
+                    else CollectionSchedule()
+                ),
             )
 
     # ------------------------------------------------------------------
@@ -403,8 +408,6 @@ class KometaParser:
         filters = self._parse_filters(raw_filters)
         if config.get("schedule"):
             schedule = CollectionSchedule.from_kometa(str(config["schedule"]))
-        elif template:
-            schedule = template.schedule
         else:
             schedule = CollectionSchedule()
 
@@ -420,15 +423,16 @@ class KometaParser:
 
         # Parse IMDb builders
         imdb_chart = self._normalize_imdb_builder(config.get("imdb_chart"))
-        imdb_list = self._normalize_imdb_builder(config.get("imdb_list"))
+        imdb_list = self._normalize_imdb_builder(config.get("imdb_list", config.get("imdb_list_details")))
         radarr_taglist = self._normalize_tag_builder(config.get("radarr_taglist"))
         sonarr_taglist = self._normalize_tag_builder(config.get("sonarr_taglist"))
 
         plex_search = config.get("plex_search")
         collection_order = self._parse_collection_order(config.get("collection_order"))
 
-        trakt_lists = self._normalize_string_list(config.get("trakt_list"))
-        mdblist_lists = self._normalize_string_list(config.get("mdblist_list"))
+        # Kometa `<builder>_details` variants (builder plus collection details) behave like the builder
+        trakt_lists = self._normalize_string_list(config.get("trakt_list", config.get("trakt_list_details")))
+        mdblist_lists = self._normalize_string_list(config.get("mdblist_list", config.get("mdblist_list_details")))
 
         sync_value = str(config.get("sync_mode", template.sync_mode.value if template else "sync")).lower()
 
@@ -457,9 +461,9 @@ class KometaParser:
             tmdb_airing_today=config.get("tmdb_airing_today"),
             tmdb_on_the_air=config.get("tmdb_on_the_air"),
             tmdb_discover=tmdb_discover,
-            tmdb_list=config.get("tmdb_list"),
-            tmdb_movie=self._int_list(config.get("tmdb_movie")),
-            tmdb_show=self._int_list(config.get("tmdb_show")),
+            tmdb_list=config.get("tmdb_list", config.get("tmdb_list_details")),
+            tmdb_movie=self._int_list(config.get("tmdb_movie", config.get("tmdb_movie_details"))),
+            tmdb_show=self._int_list(config.get("tmdb_show", config.get("tmdb_show_details"))),
             tmdb_collection=self._int_list(config.get("tmdb_collection", config.get("tmdb_collection_details"))),
             tmdb_keyword=self._int_list(config.get("tmdb_keyword")),
             tmdb_director=self._int_list(config.get("tmdb_director", config.get("tmdb_director_details"))),

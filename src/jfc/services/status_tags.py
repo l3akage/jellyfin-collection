@@ -235,8 +235,12 @@ class StatusTagService:
                 stats["changed"] += 1
                 return
 
-            async with semaphore:
-                ok = await self.jellyfin.update_item_tags(item.jellyfin_id, add=add, remove=remove)
+            try:
+                async with semaphore:
+                    ok = await self.jellyfin.update_item_tags(item.jellyfin_id, add=add, remove=remove)
+            except Exception as e:
+                logger.warning(f"[StatusTags] Could not update '{item.title}': {e!r}")
+                ok = False
             stats["changed" if ok else "failed"] += 1
 
         await asyncio.gather(*(update(s) for s in series))

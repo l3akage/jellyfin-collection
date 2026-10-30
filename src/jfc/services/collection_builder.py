@@ -313,6 +313,16 @@ class CollectionBuilder:
 
         report.collection_existed = existing is not None
 
+        # A provider that returned nothing (e.g. IMDb answering with a bot challenge, a failed API
+        # call) must neither create an empty collection nor empty an existing one. Library
+        # queries are different: "no match" is a valid result there.
+        is_library_query = collection.config.plex_all or bool(collection.config.plex_search)
+        if not posters_only and collection.total_items == 0 and not is_library_query:
+            logger.warning(
+                f"'{collection.config.name}': source returned no items, collection left unchanged"
+            )
+            return (0, 0, None)
+
         # Kometa minimum_items / delete_below_minimum. "Nothing matched" is ambiguous (the library
         # may still be indexing), so an existing collection is never deleted in that case; it is
         # left to the wipe guard below.

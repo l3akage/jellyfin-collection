@@ -229,3 +229,38 @@ dynamic_collections:
         instance = parser.build_dynamic_instance(placeholder.dynamic_spec, 10, "Star Wars")
         assert instance.name == "Star Wars"
         assert instance.tmdb_collection == [10]
+
+
+class TestRegressionsFromFirstRun:
+    def test_template_without_schedule_runs_daily(self, tmp_path: Path):
+        c = _parse(
+            tmp_path,
+            """
+templates:
+  Movies:
+    optional: [trakt_list]
+    trakt_list_details: <<trakt_list>>
+collections:
+  Ghibli:
+    template: {name: Movies, trakt_list: "https://trakt.tv/users/a/lists/b?sort=rank,asc"}
+""",
+        )[0]
+        assert c.schedule.schedule_type == ScheduleType.DAILY
+        # `trakt_list_details` is the builder plus details
+        assert c.trakt_lists == ["https://trakt.tv/users/a/lists/b?sort=rank,asc"]
+
+    def test_imdb_alternative_lists(self):
+        doc = build_default_collections(
+            "imdb", MediaType.MOVIE,
+            {"top_list": "https://trakt.tv/users/x/lists/top", "popular_list": "https://mdblist.com/lists/a/b"},
+        )
+        top, popular = doc["collections"].values()
+        assert top["trakt_list"].startswith("https://trakt.tv") and "imdb_chart" not in top
+        assert popular["mdblist_list"].startswith("https://mdblist.com")
+
+    def test_tmdb_series_without_origin_country(self):
+        from jfc.clients.tmdb import TMDbClient
+
+        client = TMDbClient.__new__(TMDbClient)
+        series = client._parse_series({"id": 1, "name": "X", "origin_country": [], "genre_ids": []})
+        assert series.original_country is None

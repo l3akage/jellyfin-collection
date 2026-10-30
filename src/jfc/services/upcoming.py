@@ -366,8 +366,12 @@ class UpcomingService:
             if self.dry_run:
                 logger.info(f"[DRY RUN] {item.title}: +{add} -{remove}")
                 return True
-            async with semaphore:
-                return bool(await self.jellyfin.update_item_tags(item.jellyfin_id, add=add, remove=remove))
+            try:
+                async with semaphore:
+                    return bool(await self.jellyfin.update_item_tags(item.jellyfin_id, add=add, remove=remove))
+            except Exception as e:
+                logger.warning(f"[Upcoming] Could not update '{item.title}': {e!r}")
+                return False
 
         results = await asyncio.gather(*(update(i) for i in items))
         changed = sum(1 for r in results if r)
