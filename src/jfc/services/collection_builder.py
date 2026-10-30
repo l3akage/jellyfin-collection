@@ -313,20 +313,25 @@ class CollectionBuilder:
 
         report.collection_existed = existing is not None
 
-        # Kometa minimum_items / delete_below_minimum
+        # Kometa minimum_items / delete_below_minimum. "Nothing matched" is ambiguous (the library
+        # may still be indexing), so an existing collection is never deleted in that case; it is
+        # left to the wipe guard below.
         if (
             not posters_only
-            and collection.matched_items < collection.config.minimum_items
             and collection.total_items > 0
+            and collection.matched_items < collection.config.minimum_items
         ):
-            logger.info(
-                f"'{collection.config.name}': {collection.matched_items} matched items "
-                f"< minimum_items={collection.config.minimum_items}, collection not built"
-            )
-            if existing and collection.config.delete_below_minimum:
-                await self.jellyfin.delete_collection(existing["Id"])
-                logger.info(f"Deleted '{collection.config.name}' (below minimum)")
-            return (0, 0, None)
+            if collection.matched_items > 0:
+                logger.info(
+                    f"'{collection.config.name}': {collection.matched_items} matched items "
+                    f"< minimum_items={collection.config.minimum_items}, collection not built"
+                )
+                if existing and collection.config.delete_below_minimum:
+                    await self.jellyfin.delete_collection(existing["Id"])
+                    logger.info(f"Deleted '{collection.config.name}' (below minimum)")
+                return (0, 0, None)
+            if not existing:
+                return (0, 0, None)
 
         if existing:
             collection.jellyfin_id = existing["Id"]

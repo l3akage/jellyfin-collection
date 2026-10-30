@@ -605,7 +605,13 @@ class KometaParser:
         if not value:
             return CollectionOrder.CUSTOM
 
-        value_lower = value.lower().strip()
+        value_lower = str(value).lower().strip()
+        # Kometa sort strings such as "title.asc" / "release.desc"
+        for suffix in (".asc", ".desc"):
+            if value_lower.endswith(suffix):
+                value_lower = value_lower[: -len(suffix)]
+        if value_lower == "title":
+            value_lower = "alpha"
 
         # Map common names to enum values
         order_mapping = {
