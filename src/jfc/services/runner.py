@@ -31,6 +31,7 @@ from jfc.services.collection_builder import CollectionBuilder
 from jfc.services.poster_generator import PosterGenerator
 from jfc.services.report_generator import ReportGenerator
 from jfc.services.startup import StartupService
+from jfc.services.status_tags import StatusTagService, StatusTagSettings
 from jfc.services.trakt_auth import TraktAuth
 
 
@@ -264,6 +265,9 @@ class Runner:
         # Get Jellyfin libraries for ID mapping
         jellyfin_libraries = await self.jellyfin.get_libraries()
         library_id_map = {lib["Name"]: lib["ItemId"] for lib in jellyfin_libraries}
+
+        # Series status tags (TSSK replacement), configured in config.yml `status_tags:`
+        await self._run_status_tags(library_id_map)
 
         # Process each library
         for library_name, collection_configs in all_collections.items():
@@ -548,6 +552,26 @@ class Runner:
             await self.radarr.close()
         if self.sonarr:
             await self.sonarr.close()
+
+    async def _run_status_tags(self, library_id_map: dict[str, str]) -> None:
+        """Write series status tags when `status_tags:` is present in config.yml."""
+        raw = self.parser.parse_config().get("status_tags")
+        if not raw or raw.get("enabled") is False:
+            return
+
+        settings = StatusTagSettings.from_dict(raw)
+        library_name = settings.library or next(
+            (n for n in library_id_map if self._infer_media_type(n) == MediaType.SERIES), None
+        )
+        library_id = library_id_map.get(library_name or "")
+        if not library_id:
+            logger.warning(f"status_tags: series library '{library_name}' not found in Jellyfin")
+            return
+
+        try:
+            await StatusTagService(self.jellyfin, self.tmdb, settings, dry_run=self.dry_run).run(library_id)
+        except Exception as e:
+            logger.error(f"status_tags failed: {e}")
 
     def _infer_media_type(self, library_name: str) -> MediaType:
         """Infer media type from library name."""

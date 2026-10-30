@@ -601,6 +601,21 @@ class TMDbClient(BaseClient):
         crew = [c for c in response.json().get("crew", []) if c.get("job") == "Director"]
         return [self._parse_movie(c) for c in crew]
 
+    async def get_series_schedule(self, tmdb_id: int) -> Optional[dict[str, Any]]:
+        """Status plus last/next episode info of a series (for status tags)."""
+        response = await self.get(f"/tv/{tmdb_id}", params=self._params())
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        data = response.json()
+        return {
+            "status": data.get("status"),
+            "in_production": data.get("in_production", False),
+            "number_of_seasons": data.get("number_of_seasons"),
+            "last_episode": data.get("last_episode_to_air"),
+            "next_episode": data.get("next_episode_to_air"),
+        }
+
     async def get_series_status(self, tmdb_id: int) -> Optional[str]:
         """TMDb status string of a series (Returning Series, Ended, Canceled, ...)."""
         response = await self.get(f"/tv/{tmdb_id}", params=self._params())
