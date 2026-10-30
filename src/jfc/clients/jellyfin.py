@@ -469,7 +469,9 @@ class JellyfinClient(BaseClient):
 
     async def get_item_for_update(self, item_id: str) -> Optional[dict[str, Any]]:
         """Full item DTO suitable for posting back to /Items/{id}."""
-        response = await self.get("/Items", params={"Ids": item_id, "Fields": self._ITEM_UPDATE_FIELDS})
+        response = await self.get(
+            "/Items", params={"Ids": item_id, "Fields": self._ITEM_UPDATE_FIELDS}, timeout=60.0
+        )
         if response.status_code != 200:
             return None
         items = response.json().get("Items", [])
@@ -509,7 +511,7 @@ class JellyfinClient(BaseClient):
         response = None
         for attempt in (1, 2):
             try:
-                response = await self.post(f"/Items/{item_id}", json=item)
+                response = await self.post(f"/Items/{item_id}", json=item, timeout=120.0)
                 break
             except httpx.TimeoutException:
                 if attempt == 2:

@@ -185,7 +185,7 @@ async def test_update_item_tags_posts_full_dto_and_only_when_changed():
     client.get_item_for_update = AsyncMock(return_value=dto)
     posted = {}
 
-    async def post(url, json=None):
+    async def post(url, json=None, **kwargs):
         posted["url"], posted["json"] = url, json
         return MagicMock(status_code=204)
 
