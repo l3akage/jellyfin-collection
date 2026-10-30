@@ -23,6 +23,8 @@ from typing import Any, Optional
 
 from loguru import logger
 
+from jfc.models.media import MediaType
+
 MARKER = ".jfc-placeholder"
 COMING_SOON = "Coming Soon"
 MOVIE_DATE_TAG = "Expected"
@@ -333,7 +335,10 @@ class UpcomingService:
 
     async def _apply_tags(self, library_id: str, titles: list[UpcomingTitle], is_series: bool) -> int:
         items = await self.jellyfin.get_library_items(
-            library_id=library_id, media_type=None, limit=50000, detailed=True
+            library_id=library_id,
+            media_type=MediaType.SERIES if is_series else MediaType.MOVIE,
+            limit=50000,
+            detailed=True,
         )
         by_key: dict[tuple[str, int], UpcomingTitle] = {}
         for title in titles:

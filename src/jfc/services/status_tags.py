@@ -22,7 +22,7 @@ from typing import Any, Optional
 
 from loguru import logger
 
-from jfc.models.media import LibraryItem
+from jfc.models.media import LibraryItem, MediaType
 
 STATUS_TAG_NAMES = (
     "NewShow",
@@ -206,9 +206,9 @@ class StatusTagService:
         """Update the status tags of every series in the library. Returns change counters."""
         today = today or date.today()
         series: list[LibraryItem] = await self.jellyfin.get_library_items(
-            library_id=library_id, media_type=None, limit=50000, detailed=True
+            library_id=library_id, media_type=MediaType.SERIES, limit=50000, detailed=True
         )
-        series = [s for s in series if s.media_type.value == "series"]
+        logger.info(f"[StatusTags] Checking {len(series)} series")
 
         schedules = await self._load_schedules(series)
 
@@ -247,6 +247,8 @@ class StatusTagService:
         ids = sorted({s.tmdb_id for s in series if s.tmdb_id})
         schedules: dict[int, dict[str, Any]] = {}
         semaphore = asyncio.Semaphore(8)
+        done = 0
+        logger.info(f"[StatusTags] Loading TMDb schedules for {len(ids)} series (this can take a minute)")
 
         async def fetch(tmdb_id: int) -> None:
             async with semaphore:
@@ -257,6 +259,10 @@ class StatusTagService:
                     return
             if info:
                 schedules[tmdb_id] = info
+            nonlocal done
+            done += 1
+            if done % 250 == 0:
+                logger.info(f"[StatusTags] TMDb schedules: {done}/{len(ids)}")
 
         await asyncio.gather(*(fetch(i) for i in ids))
         return schedules

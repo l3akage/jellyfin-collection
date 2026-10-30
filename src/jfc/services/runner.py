@@ -168,7 +168,7 @@ class Runner:
             sonarr=self.sonarr,
         )
 
-        # Track if startup has been run
+        # Trakt is created per run (valid token); the startup check must see the same client
         self._startup_done = False
 
     async def run(
@@ -216,6 +216,7 @@ class Runner:
                     )
                     # Update builder with Trakt client
                     self.builder.trakt = self.trakt
+                    self.startup.trakt = self.trakt
                     logger.info("Trakt client initialized with valid token")
             else:
                 logger.warning("Trakt not authenticated. Run 'jfc trakt-auth' to authenticate.")
