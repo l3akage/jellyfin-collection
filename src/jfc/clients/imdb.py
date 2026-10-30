@@ -19,6 +19,8 @@ class IMDbClient(BaseClient):
         "boxoffice": "/chart/boxoffice/",
         "moviemeter": "/chart/moviemeter/",
         "tvmeter": "/chart/tvmeter/",
+        "toptv": "/chart/toptv/",
+        "bottom": "/chart/bottom/",
     }
 
     def __init__(self):

@@ -1,5 +1,7 @@
 """Parser for Kometa (Plex Meta Manager) YAML configuration files."""
 
+import copy
+import re
 from datetime import date
 from pathlib import Path
 from typing import Any, Optional
@@ -7,6 +9,9 @@ from typing import Any, Optional
 import yaml
 from loguru import logger
 
+from jfc.models.media import infer_media_type
+from jfc.parsers.defaults import build_default_collections
+from jfc.parsers.seasonal import dynamic_range
 from jfc.models.collection import (
     CollectionConfig,
     CollectionFilter,
@@ -15,6 +20,13 @@ from jfc.models.collection import (
     CollectionTemplate,
     SyncMode,
 )
+
+
+_DROP = object()
+
+
+class _OptionalMissing(Exception):
+    """Raised internally when an optional template variable is not provided."""
 
 
 class KometaParser:
@@ -29,6 +41,8 @@ class KometaParser:
         """
         self.config_path = config_path
         self._templates: dict[str, CollectionTemplate] = {}
+        self._raw_templates: dict[str, dict[str, Any]] = {}
+        self._global_variables: dict[str, Any] = {}
 
     def parse_config(self, file_path: Optional[Path] = None) -> dict[str, Any]:
         """
@@ -64,26 +78,47 @@ class KometaParser:
         """
         result = {
             "collection_files": [],
+            "collection_entries": [],
             "operations": library_config.get("operations", {}),
             "radarr": library_config.get("radarr"),
             "sonarr": library_config.get("sonarr"),
         }
 
-        # Parse collection files
-        for cf in library_config.get("collection_files", []):
+        # Parse collection files (plain paths, `file:` entries and Kometa `default:` entries)
+        for cf in library_config.get("collection_files") or []:
             if isinstance(cf, dict) and "file" in cf:
                 result["collection_files"].append(cf["file"])
+                result["collection_entries"].append(
+                    {
+                        "file": cf["file"],
+                        "template_variables": cf.get("template_variables") or {},
+                    }
+                )
+            elif isinstance(cf, dict) and "default" in cf:
+                result["collection_entries"].append(
+                    {
+                        "default": cf["default"],
+                        "template_variables": cf.get("template_variables") or {},
+                    }
+                )
             elif isinstance(cf, str):
                 result["collection_files"].append(cf)
+                result["collection_entries"].append({"file": cf, "template_variables": {}})
 
         return result
 
-    def parse_collection_file(self, file_path: Path) -> list[CollectionConfig]:
+    def parse_collection_file(
+        self,
+        file_path: Path,
+        template_variables: Optional[dict[str, Any]] = None,
+    ) -> list[CollectionConfig]:
         """
         Parse a collection YAML file (e.g., Films.yml, Series.yml).
 
         Args:
             file_path: Path to collection file
+            template_variables: Variables from the `template_variables:` of the config entry
+                (usable as `<<name>>` in the file)
 
         Returns:
             List of parsed collection configurations
@@ -92,58 +127,248 @@ class KometaParser:
             logger.warning(f"Collection file not found: {file_path}")
             return []
 
-        with open(file_path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+        except yaml.YAMLError as e:
+            logger.error(f"Invalid YAML in {file_path}: {e}")
+            return []
 
         if not data:
             return []
 
-        # Parse templates first
-        self._parse_templates(data.get("templates", {}))
+        return self.parse_collection_data(data, template_variables, source=str(file_path))
 
-        # Parse collections
+    def parse_collection_data(
+        self,
+        data: dict[str, Any],
+        template_variables: Optional[dict[str, Any]] = None,
+        source: str = "<data>",
+    ) -> list[CollectionConfig]:
+        """Parse an already loaded collection document (templates + collections)."""
+        # Parse templates first
+        self._parse_templates(data.get("templates") or {})
+        self._global_variables = dict(template_variables or {})
+
         collections = []
-        for name, config in data.get("collections", {}).items():
+        for name, config in (data.get("collections") or {}).items():
             try:
-                collection = self._parse_collection(name, config)
-                collections.append(collection)
+                name = self._substitute_name(str(name))
+                collections.append(self._parse_collection(name, config or {}))
             except Exception as e:
                 logger.error(f"Failed to parse collection '{name}': {e}")
 
-        logger.info(f"Parsed {len(collections)} collections from {file_path}")
+        for dyn_name, dyn_config in (data.get("dynamic_collections") or {}).items():
+            collections.extend(self._parse_dynamic_collection(str(dyn_name), dyn_config or {}))
+
+        logger.info(f"Parsed {len(collections)} collections from {source}")
         return collections
 
+    def _substitute_name(self, name: str) -> str:
+        """Collection names may use `<<var>>` from the entry's template_variables."""
+        if "<<" not in name:
+            return name
+        try:
+            return str(self._substitute(name, self._global_variables, set()))
+        except KeyError:
+            return name
+
     def _parse_templates(self, templates: dict[str, Any]) -> None:
-        """Parse template definitions."""
+        """Store template definitions (raw bodies; resolved per collection)."""
         for name, config in templates.items():
-            self._templates[name] = CollectionTemplate(
-                name=name,
+            config = config or {}
+            self._raw_templates[str(name)] = config
+            self._templates[str(name)] = CollectionTemplate(
+                name=str(name),
                 sync_mode=SyncMode(config.get("sync_mode", "sync")),
                 visible_library=config.get("visible_library", True),
                 visible_home=config.get("visible_home", False),
                 visible_shared=config.get("visible_shared", False),
-                filters=self._parse_filters(config.get("filters", {})),
+                filters=self._parse_filters(config.get("filters") or {}),
                 schedule=CollectionSchedule.from_kometa(config.get("schedule")),
             )
 
+    # ------------------------------------------------------------------
+    # Template resolution
+    # ------------------------------------------------------------------
+
+    _VAR_PATTERN = re.compile(r"<<([^<>]+)>>")
+    _TEMPLATE_META_KEYS = {"optional", "default", "conditionals", "move_prefix", "move_collection_prefix"}
+
+    def _template_specs(self, config: dict[str, Any]) -> list[dict[str, Any]]:
+        """Normalize the `template:` key (dict, list of dicts, or name string) to a list of dicts."""
+        raw = config.get("template")
+        if raw is None:
+            return []
+        if isinstance(raw, str):
+            return [{"name": raw}]
+        if isinstance(raw, dict):
+            return [raw]
+        if isinstance(raw, list):
+            specs: list[dict[str, Any]] = []
+            for entry in raw:
+                if isinstance(entry, dict):
+                    specs.append(entry)
+                elif isinstance(entry, str):
+                    specs.append({"name": entry})
+            return specs
+        return []
+
+    def _substitute(self, value: Any, variables: dict[str, Any], optional: set[str]) -> Any:
+        """Replace `<<var>>` placeholders. Returns `_DROP` when an optional variable is missing."""
+        if isinstance(value, str):
+            matches = list(self._VAR_PATTERN.finditer(value))
+            if not matches:
+                return value
+
+            # Whole-value placeholder keeps native types (lists, ints, dicts)
+            if len(matches) == 1 and matches[0].span() == (0, len(value)):
+                key = matches[0].group(1).strip()
+                if key in variables and variables[key] is not None:
+                    return copy.deepcopy(variables[key])
+                if key in optional:
+                    return _DROP
+                raise KeyError(f"Template variable '{key}' is not defined")
+
+            def repl(match: re.Match) -> str:
+                key = match.group(1).strip()
+                if key in variables and variables[key] is not None:
+                    return str(variables[key])
+                if key in optional:
+                    raise _OptionalMissing(key)
+                raise KeyError(f"Template variable '{key}' is not defined")
+
+            try:
+                return self._VAR_PATTERN.sub(repl, value)
+            except _OptionalMissing:
+                return _DROP
+
+        if isinstance(value, dict):
+            result: dict[Any, Any] = {}
+            for key, val in value.items():
+                new_val = self._substitute(val, variables, optional)
+                if new_val is _DROP:
+                    continue
+                result[key] = new_val
+            return result
+
+        if isinstance(value, list):
+            items = []
+            for val in value:
+                new_val = self._substitute(val, variables, optional)
+                if new_val is _DROP:
+                    continue
+                items.append(new_val)
+            return items
+
+        return value
+
+    def _resolve_collection_dict(self, name: str, config: dict[str, Any]) -> dict[str, Any]:
+        """Merge referenced templates into the collection config and resolve `<<variables>>`."""
+        specs = self._template_specs(config)
+        merged: dict[str, Any] = {}
+
+        dynamic = config.get("dynamic")
+        dynamic_dates = dynamic_range(dynamic, date.today().year) if dynamic else None
+
+        for spec in specs:
+            template_name = spec.get("name")
+            body = self._raw_templates.get(str(template_name)) if template_name else None
+            if body is None:
+                logger.warning(f"Collection '{name}': template '{template_name}' not found")
+                continue
+
+            variables: dict[str, Any] = {"collection_name": name, "mapping_name": name}
+            variables.update(self._global_variables)
+            variables.update((body.get("default") or {}))
+            variables.update({k: v for k, v in spec.items() if k != "name"})
+            if dynamic_dates:
+                variables["start_date"], variables["end_date"] = dynamic_dates
+
+            optional = set(self._normalize_string_list(body.get("optional")))
+            optional.update(str(k) for k in (body.get("default") or {}))
+            body_items = {k: v for k, v in body.items() if k not in self._TEMPLATE_META_KEYS}
+
+            try:
+                resolved = self._substitute(body_items, variables, optional)
+            except KeyError as e:
+                logger.warning(f"Collection '{name}': {e}; template '{template_name}' skipped")
+                continue
+
+            for key, val in resolved.items():
+                if key == "filters" and isinstance(val, dict) and isinstance(merged.get("filters"), dict):
+                    merged["filters"] = {**merged["filters"], **val}
+                else:
+                    merged[key] = val
+
+        own = {k: v for k, v in config.items() if k not in ("template", "dynamic")}
+        # Resolve global template_variables (e.g. <<collection_name>>) in the collection itself
+        own_vars = {"collection_name": name, "mapping_name": name, **self._global_variables}
+        try:
+            own = self._substitute(own, own_vars, set())
+        except KeyError:
+            pass
+
+        for key, val in own.items():
+            if key == "filters" and isinstance(val, dict) and isinstance(merged.get("filters"), dict):
+                merged["filters"] = {**merged["filters"], **val}
+            else:
+                merged[key] = val
+
+        return merged
+
+    def _parse_dynamic_collection(self, mapping_name: str, config: dict[str, Any]) -> list[CollectionConfig]:
+        """
+        Dynamic collections. Currently `type: tmdb_collection` over `data`/`include`
+        is not resolvable offline, so only explicit `include` lists are expanded.
+        """
+        include = config.get("include")
+        if not include:
+            logger.warning(
+                f"dynamic_collections '{mapping_name}' needs a runtime provider and is skipped "
+                "(only entries with an explicit include list are expanded)"
+            )
+            return []
+
+        results: list[CollectionConfig] = []
+        template = config.get("template")
+        dyn_type = config.get("type")
+        for key in include if isinstance(include, list) else [include]:
+            collection_name = str(key)
+            raw: dict[str, Any] = {"template": copy.deepcopy(template)} if template else {}
+            if isinstance(raw.get("template"), dict):
+                raw["template"].setdefault("name", None)
+                raw["template"]["key"] = key
+                raw["template"]["value"] = key
+            if dyn_type == "tmdb_collection":
+                raw["tmdb_collection"] = [key]
+            try:
+                results.append(self._parse_collection(collection_name, raw))
+            except Exception as e:
+                logger.error(f"Failed to parse dynamic collection '{collection_name}': {e}")
+        return results
+
+    # ------------------------------------------------------------------
+    # Collection parsing
+    # ------------------------------------------------------------------
+
     def _parse_collection(self, name: str, config: dict[str, Any]) -> CollectionConfig:
-        """Parse a single collection configuration."""
-        # Apply template defaults if specified
-        template_config = config.get("template", {})
-        template_name = template_config.get("name") if isinstance(template_config, dict) else None
+        """Parse a single collection configuration (templates are merged first)."""
+        template_specs = self._template_specs(config)
+        template_name = template_specs[0].get("name") if template_specs else None
         template = self._templates.get(template_name) if template_name else None
 
-        # Start with template defaults
-        base_filters = template.filters if template else CollectionFilter()
-        base_schedule = template.schedule if template else CollectionSchedule()
+        config = self._resolve_collection_dict(name, config)
 
-        # Override with collection-specific values
-        filters = self._parse_filters(config.get("filters", {}), base_filters)
-        # Only override schedule if explicitly set in collection config
+        # Filters (CollectionFilter for provider results) + raw dict for library queries
+        raw_filters = config.get("filters") or {}
+        filters = self._parse_filters(raw_filters)
         if config.get("schedule"):
-            schedule = CollectionSchedule.from_kometa(config["schedule"])
+            schedule = CollectionSchedule.from_kometa(str(config["schedule"]))
+        elif template:
+            schedule = template.schedule
         else:
-            schedule = base_schedule
+            schedule = CollectionSchedule()
 
         # Parse tmdb_discover if present
         tmdb_discover = None
@@ -161,24 +386,29 @@ class KometaParser:
         radarr_taglist = self._normalize_tag_builder(config.get("radarr_taglist"))
         sonarr_taglist = self._normalize_tag_builder(config.get("sonarr_taglist"))
 
-        # Parse plex_search (will work with Jellyfin)
         plex_search = config.get("plex_search")
-
-        # Parse collection_order
         collection_order = self._parse_collection_order(config.get("collection_order"))
+
+        trakt_lists = self._normalize_string_list(config.get("trakt_list"))
+        mdblist_lists = self._normalize_string_list(config.get("mdblist_list"))
+
+        sync_value = str(config.get("sync_mode", template.sync_mode.value if template else "sync")).lower()
 
         return CollectionConfig(
             name=name,
             summary=config.get("summary"),
             sort_title=config.get("sort_title"),
             poster=config.get("poster"),
+            url_poster=config.get("url_poster"),
             collection_order=collection_order,
             visible_library=config.get("visible_library", template.visible_library if template else True),
             visible_home=config.get("visible_home", template.visible_home if template else False),
             visible_shared=config.get("visible_shared", template.visible_shared if template else False),
-            sync_mode=SyncMode(config.get("sync_mode", template.sync_mode.value if template else "sync")),
-            minimum_items=config.get("minimum_items", 1),
-            delete_not_scheduled=config.get("delete_not_scheduled", False),
+            sync_mode=SyncMode(sync_value if sync_value in ("sync", "append") else "sync"),
+            minimum_items=int(config.get("minimum_items", 1) or 1),
+            delete_below_minimum=self._as_bool(config.get("delete_below_minimum", False)),
+            delete_not_scheduled=self._as_bool(config.get("delete_not_scheduled", False)),
+            build_collection=self._as_bool(config.get("build_collection", True)),
             schedule=schedule,
             filters=filters,
             # Builder sources
@@ -190,16 +420,33 @@ class KometaParser:
             tmdb_on_the_air=config.get("tmdb_on_the_air"),
             tmdb_discover=tmdb_discover,
             tmdb_list=config.get("tmdb_list"),
+            tmdb_movie=self._int_list(config.get("tmdb_movie")),
+            tmdb_show=self._int_list(config.get("tmdb_show")),
+            tmdb_collection=self._int_list(config.get("tmdb_collection", config.get("tmdb_collection_details"))),
+            tmdb_keyword=self._int_list(config.get("tmdb_keyword")),
+            tmdb_director=self._int_list(config.get("tmdb_director", config.get("tmdb_director_details"))),
+            tvdb_show=self._int_list(config.get("tvdb_show")),
+            tvdb_movie=self._int_list(config.get("tvdb_movie")),
             trakt_trending=config.get("trakt_trending"),
             trakt_popular=config.get("trakt_popular"),
             trakt_chart=trakt_chart,
-            trakt_list=config.get("trakt_list"),
-            mdblist_list=config.get("mdblist_list"),
+            trakt_list=trakt_lists[0] if trakt_lists else None,
+            trakt_lists=trakt_lists,
+            mdblist_list=mdblist_lists[0] if mdblist_lists else None,
+            mdblist_lists=mdblist_lists,
             imdb_chart=imdb_chart,
             imdb_list=imdb_list,
             radarr_taglist=radarr_taglist,
             sonarr_taglist=sonarr_taglist,
             plex_search=plex_search,
+            plex_all=self._as_bool(config.get("plex_all", False)),
+            library_filters=raw_filters if isinstance(raw_filters, dict) else {},
+            # Labels
+            item_label=self._label_list(config.get("item_label")),
+            non_item_remove_label=self._label_list(config.get("non_item_remove_label")),
+            item_label_remove=self._label_list(config.get("item_label.remove")),
+            radarr_add_missing=self._optional_bool(config.get("radarr_add_missing")),
+            sonarr_add_missing=self._optional_bool(config.get("sonarr_add_missing")),
             # Tags
             item_radarr_tag=config.get("item_radarr_tag"),
             item_sonarr_tag=config.get("item_sonarr_tag"),
@@ -208,6 +455,49 @@ class KometaParser:
             # Template reference
             template=template_name,
         )
+
+    @staticmethod
+    def _as_bool(value: Any) -> bool:
+        if isinstance(value, str):
+            return value.strip().lower() in ("true", "yes", "1")
+        return bool(value)
+
+    @staticmethod
+    def _optional_bool(value: Any) -> Optional[bool]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value.strip().lower() in ("true", "yes", "1")
+        return bool(value)
+
+    @staticmethod
+    def _int_list(value: Any) -> list[int]:
+        """Normalize `1, 2, 3` / [1, 2] / 5 to a list of ints (invalid entries are skipped)."""
+        if value is None:
+            return []
+        if isinstance(value, str):
+            values: list[Any] = [v for v in re.split(r"[,\s]+", value) if v]
+        elif isinstance(value, list):
+            values = value
+        else:
+            values = [value]
+        result: list[int] = []
+        for v in values:
+            try:
+                result.append(int(str(v).strip()))
+            except (TypeError, ValueError):
+                continue
+        return result
+
+    @staticmethod
+    def _label_list(value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [v.strip() for v in value.split(",") if v.strip()]
+        if isinstance(value, list):
+            return [str(v).strip() for v in value if str(v).strip()]
+        return [str(value)]
 
     def _parse_filters(
         self,
@@ -416,6 +706,13 @@ class KometaParser:
             else:
                 result["without_genres"] = genres
 
+        # Networks / keywords / companies (comma or pipe separated, or lists)
+        for key in ("with_networks", "with_keywords", "with_companies"):
+            if key in discover:
+                result[key] = self._int_list(
+                    discover[key].replace("|", ",") if isinstance(discover[key], str) else discover[key]
+                )
+
         # Handle watch providers (pipe-separated in Kometa)
         if "with_watch_providers" in discover:
             providers = discover["with_watch_providers"]
@@ -461,13 +758,30 @@ class KometaParser:
             parsed = self.parse_library_config(library_config)
             collections = []
 
-            for cf_path in parsed["collection_files"]:
+            media_type = infer_media_type(library_name)
+
+            for entry in parsed["collection_entries"]:
+                variables = entry.get("template_variables") or {}
+
+                if "default" in entry:
+                    default_data = build_default_collections(str(entry["default"]), media_type, variables)
+                    if default_data is None:
+                        logger.warning(
+                            f"Library '{library_name}': Kometa default '{entry['default']}' is not supported, skipped"
+                        )
+                        continue
+                    collections.extend(
+                        self.parse_collection_data(default_data, source=f"default:{entry['default']}")
+                    )
+                    continue
+
+                cf_path = entry["file"]
                 # Handle relative paths
                 if cf_path.startswith("config/"):
-                    cf_path = cf_path.replace("config/", "")
+                    cf_path = cf_path.replace("config/", "", 1)
 
                 full_path = self.config_path / cf_path
-                collections.extend(self.parse_collection_file(full_path))
+                collections.extend(self.parse_collection_file(full_path, variables))
 
             # Apply library-level Sonarr/Radarr settings to each collection
             sonarr_config = parsed.get("sonarr") or {}

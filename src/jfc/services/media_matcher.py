@@ -24,6 +24,8 @@ class MediaMatcher:
         self._cache: dict[int, Optional[LibraryItem]] = {}  # tmdb_id -> LibraryItem
         self._library_loaded: dict[str, bool] = {}  # library_id -> loaded
         self._library_items: dict[str, dict[int, LibraryItem]] = {}  # library_id -> {tmdb_id -> item}
+        self._tvdb_index: dict[str, dict[int, LibraryItem]] = {}
+        self._imdb_index: dict[str, dict[str, LibraryItem]] = {}
 
     async def _ensure_library_loaded(self, library_id: str, media_type: Optional[MediaType] = None) -> None:
         """Load all items from a library into cache."""
@@ -38,11 +40,17 @@ class MediaMatcher:
             limit=self.preload_limit,
         )
 
-        # Index by TMDb ID
+        # Index by TMDb ID (plus TVDb / IMDb for items that only carry those)
         self._library_items[library_id] = {}
+        self._tvdb_index[library_id] = {}
+        self._imdb_index[library_id] = {}
         for item in items:
             if item.tmdb_id:
                 self._library_items[library_id][item.tmdb_id] = item
+            if item.tvdb_id:
+                self._tvdb_index[library_id][item.tvdb_id] = item
+            if item.imdb_id:
+                self._imdb_index[library_id][item.imdb_id.lower()] = item
 
         self._library_loaded[library_id] = True
         logger.info(
@@ -89,6 +97,20 @@ class MediaMatcher:
                     f"-> {lib_item.title} ({lib_item.year})"
                 )
                 return lib_item
+
+        # Items that only carry a TVDb / IMDb ID
+        if not item.tmdb_id and library_id:
+            lib_item = None
+            if item.tvdb_id:
+                lib_item = self._tvdb_index.get(library_id, {}).get(item.tvdb_id)
+            if lib_item is None and item.imdb_id:
+                lib_item = self._imdb_index.get(library_id, {}).get(item.imdb_id.lower())
+            if lib_item:
+                logger.debug(f"[Jellyfin] FOUND by external id: {item.title} -> {lib_item.title}")
+                return lib_item
+            if item.tvdb_id or item.imdb_id:
+                if not item.title or item.title.startswith(("tvdb:", "imdb:")):
+                    return None
 
         # Fall back to search by title and year (for items without TMDb ID)
         if not item.tmdb_id:
@@ -213,4 +235,6 @@ class MediaMatcher:
         self._cache.clear()
         self._library_loaded.clear()
         self._library_items.clear()
+        self._tvdb_index.clear()
+        self._imdb_index.clear()
         logger.info("[MediaMatcher] Cache reset - libraries will be reloaded")

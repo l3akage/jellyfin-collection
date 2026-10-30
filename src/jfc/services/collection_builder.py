@@ -9,8 +9,11 @@ from typing import Any, Optional
 
 from loguru import logger
 
+import asyncio
+
 from jfc.clients.imdb import IMDbClient
 from jfc.clients.jellyfin import JellyfinClient
+from jfc.clients.mdblist import MDBListClient
 from jfc.clients.radarr import RadarrClient
 from jfc.clients.sonarr import SonarrClient
 from jfc.clients.tmdb import TMDbClient
@@ -26,12 +29,26 @@ from jfc.models.collection import (
 )
 from jfc.models.media import LibraryItem, MediaItem, MediaType, Movie, Series
 from jfc.models.report import CollectionReport
+from jfc.services.library_query import LibraryQuery
 from jfc.services.media_matcher import MediaMatcher
 from jfc.services.poster_generator import PosterGenerator
 
 
+_TRAKT_LIST_RE = re.compile(r"trakt\.tv/users/([^/]+)/lists/([^/?#]+)", re.IGNORECASE)
+
+
+def _parse_trakt_list_url(url: str) -> Optional[tuple[str, str]]:
+    """`https://trakt.tv/users/<user>/lists/<slug>?...` -> (user, slug)."""
+    match = _TRAKT_LIST_RE.search(url)
+    return (match.group(1), match.group(2)) if match else None
+
+
 class CollectionBuilder:
     """Builds and updates collections in Jellyfin from Kometa configurations."""
+
+    # Overridden from settings in __init__
+    radarr_add_missing_default: bool = True
+    sonarr_add_missing_default: bool = True
 
     def __init__(
         self,
@@ -43,6 +60,7 @@ class CollectionBuilder:
         sonarr: Optional[SonarrClient] = None,
         poster_generator: Optional[PosterGenerator] = None,
         dry_run: bool = False,
+        mdblist: Optional[MDBListClient] = None,
     ):
         """
         Initialize collection builder.
@@ -65,10 +83,22 @@ class CollectionBuilder:
         self.sonarr = sonarr
         self.poster_generator = poster_generator
         self.dry_run = dry_run
+        self.mdblist = mdblist
+
+        # Per-run caches (see reset_run_caches)
+        self._detailed_libraries: dict[str, list[LibraryItem]] = {}
+        self._tmdb_status_cache: dict[int, Optional[str]] = {}
 
         settings = get_settings()
         self.matcher = MediaMatcher(jellyfin, preload_limit=settings.matcher_preload_limit)
         self.radarr_only_released = settings.radarr_only_released
+        self.radarr_add_missing_default = getattr(settings.radarr, "add_missing", True)
+        self.sonarr_add_missing_default = getattr(settings.sonarr, "add_missing", True)
+
+    def reset_run_caches(self) -> None:
+        """Forget library snapshots so a new run sees items added to Jellyfin meanwhile."""
+        self._detailed_libraries.clear()
+        self._tmdb_status_cache.clear()
 
     async def build_collection(
         self,
@@ -129,7 +159,21 @@ class CollectionBuilder:
         # Match items to library
         collection_items = []
         for item in filtered_items:
-            lib_item = await self.matcher.find_in_library(item, library_id)
+            if item.jellyfin_id:
+                # Already a Jellyfin library item (library queries)
+                lib_item = LibraryItem(
+                    jellyfin_id=item.jellyfin_id,
+                    title=item.title,
+                    year=item.year,
+                    media_type=item.media_type,
+                    tmdb_id=item.tmdb_id,
+                    imdb_id=item.imdb_id,
+                    tvdb_id=item.tvdb_id,
+                    library_id=library_id,
+                    library_name=library_name,
+                )
+            else:
+                lib_item = await self.matcher.find_in_library(item, library_id)
 
             collection_item = CollectionItem(
                 title=item.title,
@@ -157,6 +201,7 @@ class CollectionBuilder:
         collection = Collection(
             config=config,
             library_name=library_name,
+            library_id=library_id,
             items=collection_items,
             source_items=source_items,  # Original items for poster generation
         )
@@ -205,8 +250,16 @@ class CollectionBuilder:
             sources.append("Radarr Taglist")
         if config.sonarr_taglist:
             sources.append("Sonarr Taglist")
-        if config.plex_search:
+        if config.plex_search or config.plex_all:
             sources.append("Library Search")
+        if config.tmdb_movie or config.tmdb_show or config.tvdb_show:
+            sources.append("ID List")
+        if config.tmdb_collection or config.tmdb_keyword or config.tmdb_director:
+            sources.append("TMDb Franchise")
+        if config.trakt_lists:
+            sources.append("Trakt List")
+        if config.mdblist_lists:
+            sources.append("MDBList")
         return ", ".join(sources) if sources else "Unknown"
 
     async def sync_collection(
@@ -236,6 +289,12 @@ class CollectionBuilder:
             logger.info(f"[DRY RUN] Would sync collection: {collection.config.name}")
             return (0, 0, None)
 
+        # Label-only collections (Kometa `build_collection: false`): no Jellyfin collection
+        if not collection.config.build_collection:
+            if not posters_only:
+                await self.apply_labels(collection, report)
+            return (0, 0, None)
+
         # Get or create Jellyfin collection
         jellyfin_collections = await self.jellyfin.get_collections()
         existing_matches = [
@@ -253,6 +312,21 @@ class CollectionBuilder:
                 )
 
         report.collection_existed = existing is not None
+
+        # Kometa minimum_items / delete_below_minimum
+        if (
+            not posters_only
+            and collection.matched_items < collection.config.minimum_items
+            and collection.total_items > 0
+        ):
+            logger.info(
+                f"'{collection.config.name}': {collection.matched_items} matched items "
+                f"< minimum_items={collection.config.minimum_items}, collection not built"
+            )
+            if existing and collection.config.delete_below_minimum:
+                await self.jellyfin.delete_collection(existing["Id"])
+                logger.info(f"Deleted '{collection.config.name}' (below minimum)")
+            return (0, 0, None)
 
         if existing:
             collection.jellyfin_id = existing["Id"]
@@ -384,6 +458,10 @@ class CollectionBuilder:
         # Upload poster (manual or AI-generated)
         _, poster_path = await self._upload_poster(collection, media_type, force_regenerate=force_poster)
 
+        # Labels (Kometa item_label / non_item_remove_label / item_label.remove)
+        if not posters_only:
+            await self.apply_labels(collection, report)
+
         # Add missing items to Radarr/Sonarr
         if add_missing_to_arr and not posters_only:
             radarr_count, sonarr_count = await self._add_missing_to_arr(collection, report)
@@ -391,6 +469,105 @@ class CollectionBuilder:
             report.items_sent_to_sonarr = sonarr_count
 
         return (len(to_add_list), len(to_remove_list), poster_path)
+
+    async def delete_collection_by_name(self, name: str) -> int:
+        """Delete every Jellyfin collection with this name (seasonal collections out of season)."""
+        if self.dry_run:
+            logger.info(f"[DRY RUN] Would delete collection: {name}")
+            return 0
+
+        deleted = 0
+        for existing in await self.jellyfin.get_collections():
+            if existing.get("Name") == name and await self.jellyfin.delete_collection(existing["Id"]):
+                deleted += 1
+        if deleted:
+            logger.info(f"Deleted out-of-season collection '{name}'")
+        return deleted
+
+    async def apply_labels(self, collection: Collection, report: Optional[CollectionReport] = None) -> None:
+        """
+        Maintain Jellyfin tags for the Kometa label options of a collection:
+
+        - `item_label`: tag added to every matched item
+        - `non_item_remove_label`: tag removed from library items that are not matched
+        - `item_label.remove`: tag removed from every matched item
+        """
+        config = collection.config
+        if not (config.item_label or config.non_item_remove_label or config.item_label_remove):
+            return
+        if not collection.library_id:
+            logger.warning(f"Cannot apply labels for '{config.name}': library unknown")
+            return
+
+        media_type = self._media_type_of(collection)
+        library = await self.get_detailed_library(collection.library_id, media_type)
+        by_id = {item.jellyfin_id: item for item in library}
+        matched_ids = {i.jellyfin_id for i in collection.items if i.jellyfin_id}
+
+        add_ops: dict[str, list[str]] = {}
+        remove_ops: dict[str, list[str]] = {}
+
+        def current_tags(item_id: str) -> set[str]:
+            item = by_id.get(item_id)
+            return {t.lower() for t in item.tags} if item else set()
+
+        for item_id in matched_ids:
+            tags = current_tags(item_id)
+            missing = [label for label in config.item_label if label.lower() not in tags]
+            if missing:
+                add_ops.setdefault(item_id, []).extend(missing)
+            stale = [label for label in config.item_label_remove if label.lower() in tags]
+            if stale:
+                remove_ops.setdefault(item_id, []).extend(stale)
+
+        if config.non_item_remove_label:
+            for item in library:
+                if item.jellyfin_id in matched_ids:
+                    continue
+                tags = current_tags(item.jellyfin_id)
+                stale = [label for label in config.non_item_remove_label if label.lower() in tags]
+                if stale:
+                    remove_ops.setdefault(item.jellyfin_id, []).extend(stale)
+
+        if self.dry_run:
+            logger.info(
+                f"[DRY RUN] Labels for '{config.name}': +{len(add_ops)} items, -{len(remove_ops)} items"
+            )
+            return
+
+        semaphore = asyncio.Semaphore(4)
+
+        async def apply(item_id: str) -> bool:
+            async with semaphore:
+                ok = await self.jellyfin.update_item_tags(
+                    item_id, add=add_ops.get(item_id), remove=remove_ops.get(item_id)
+                )
+            if ok and item_id in by_id:
+                tags = [t for t in by_id[item_id].tags if t.lower() not in {r.lower() for r in remove_ops.get(item_id, [])}]
+                tags.extend(t for t in add_ops.get(item_id, []) if t.lower() not in {x.lower() for x in tags})
+                by_id[item_id].tags = tags
+            return ok
+
+        touched = sorted(set(add_ops) | set(remove_ops))
+        if not touched:
+            return
+        results = await asyncio.gather(*(apply(i) for i in touched))
+        failed = results.count(False)
+        logger.info(
+            f"Labels for '{config.name}': +{len(add_ops)} / -{len(remove_ops)} items"
+            + (f" ({failed} failed)" if failed else "")
+        )
+
+    @staticmethod
+    def _media_type_of(collection: Collection) -> MediaType:
+        for item in collection.items:
+            if item.media_type == "series":
+                return MediaType.SERIES
+            if item.media_type == "movie":
+                return MediaType.MOVIE
+        from jfc.models.media import infer_media_type
+
+        return infer_media_type(collection.library_name)
 
     async def _fetch_items(
         self,
@@ -506,15 +683,12 @@ class CollectionBuilder:
                 chart_items = await self._fetch_trakt_chart(config.trakt_chart, media_type)
                 items.extend(chart_items)
 
-        # Library search
-        if config.plex_search:
-            items.extend(
-                await self._fetch_plex_search(
-                    plex_search=config.plex_search,
-                    library_id=library_id,
-                    media_type=media_type,
-                )
-            )
+        # IDs / lists from TMDb, TVDb, Trakt and MDBList
+        items.extend(await self._fetch_id_sources(config, media_type))
+
+        # Library queries (Kometa plex_all / plex_search)
+        if config.plex_all or config.plex_search:
+            items.extend(await self._fetch_library_query(config, library_id, media_type))
 
         # Deduplicate by external IDs while preserving order
         seen_keys: set[tuple[str, str]] = set()
@@ -543,114 +717,140 @@ class CollectionBuilder:
 
         return unique_items
 
-    async def _fetch_plex_search(
+    async def get_detailed_library(self, library_id: str, media_type: MediaType) -> list[LibraryItem]:
+        """All items of a library with tags, streams and dates (cached for the current run)."""
+        cached = self._detailed_libraries.get(library_id)
+        if cached is not None:
+            return cached
+
+        items = await self.jellyfin.get_library_items(
+            library_id=library_id,
+            media_type=media_type,
+            limit=self.matcher.preload_limit,
+            detailed=True,
+        )
+        self._detailed_libraries[library_id] = items
+        logger.info(f"[Jellyfin] Loaded {len(items)} detailed items for library {library_id}")
+        return items
+
+    async def _load_tmdb_statuses(self, items: list[LibraryItem]) -> dict[int, str]:
+        """TMDb status ('Returning Series', 'Ended', 'Canceled', ...) for series with a TMDb ID."""
+        wanted = sorted({i.tmdb_id for i in items if i.tmdb_id and i.tmdb_id not in self._tmdb_status_cache})
+        semaphore = asyncio.Semaphore(8)
+
+        async def fetch(tmdb_id: int) -> None:
+            async with semaphore:
+                try:
+                    self._tmdb_status_cache[tmdb_id] = await self.tmdb.get_series_status(tmdb_id)
+                except Exception as e:
+                    logger.warning(f"TMDb status lookup failed for {tmdb_id}: {e}")
+                    self._tmdb_status_cache[tmdb_id] = None
+
+        if wanted:
+            logger.info(f"[TMDb] Looking up status of {len(wanted)} series")
+            await asyncio.gather(*(fetch(t) for t in wanted))
+
+        return {i.tmdb_id: self._tmdb_status_cache[i.tmdb_id] for i in items if self._tmdb_status_cache.get(i.tmdb_id)}
+
+    async def _fetch_library_query(
         self,
-        plex_search: dict[str, Any],
+        config: CollectionConfig,
         library_id: str,
         media_type: MediaType,
     ) -> list[MediaItem]:
         """
-        Fetch items from Jellyfin library using Kometa-compatible `plex_search`.
+        Items of the Jellyfin library matching `plex_all` + `filters` and/or `plex_search`.
 
-        Supports the common subset:
-        - `all.Genres` / `all.genre`
-        - `all.year`
-        - `all.year.gte`
-        - `all.year.lte`
-        - top-level `limit`
+        See `LibraryQuery` for the supported attributes. Returned items already carry their
+        Jellyfin ID.
         """
-        if not isinstance(plex_search, dict):
-            logger.warning("Invalid plex_search config: expected object")
-            return []
+        search = config.plex_search if isinstance(config.plex_search, dict) else {}
+        conditions: dict[str, Any] = {"all": [c for c in (search, config.library_filters) if c]}
 
-        conditions = plex_search.get("all", {})
-        if not isinstance(conditions, dict):
-            logger.warning("Invalid plex_search config: expected 'all' object")
-            return []
+        library_items = await self.get_detailed_library(library_id, media_type)
 
+        query = LibraryQuery()
+        if LibraryQuery.uses_attribute(conditions, "tmdb_status"):
+            if media_type == MediaType.SERIES:
+                query.set_tmdb_statuses(await self._load_tmdb_statuses(library_items))
+            else:
+                logger.warning(f"[{config.name}] tmdb_status filter only applies to series libraries")
+
+        matched = query.filter(library_items, conditions)
+        matched = LibraryQuery.sort(matched, search.get("sort_by"))
+
+        limit = search.get("limit")
         try:
-            limit = max(1, int(plex_search.get("limit", 50)))
+            if limit:
+                matched = matched[: max(1, int(limit))]
         except (TypeError, ValueError):
-            limit = 50
-
-        genre_values = conditions.get("Genres", conditions.get("genre"))
-        required_genres: set[str] = set()
-        if isinstance(genre_values, str) and genre_values.strip():
-            required_genres = {genre_values.strip().lower()}
-        elif isinstance(genre_values, list):
-            required_genres = {
-                str(genre).strip().lower()
-                for genre in genre_values
-                if isinstance(genre, str) and str(genre).strip()
-            }
-
-        try:
-            year_eq = int(conditions["year"]) if "year" in conditions else None
-        except (TypeError, ValueError):
-            year_eq = None
-        try:
-            year_gte = int(conditions["year.gte"]) if "year.gte" in conditions else None
-        except (TypeError, ValueError):
-            year_gte = None
-        try:
-            year_lte = int(conditions["year.lte"]) if "year.lte" in conditions else None
-        except (TypeError, ValueError):
-            year_lte = None
-
-        # Load from Jellyfin through the existing client API, then filter locally.
-        library_items = await self.jellyfin.get_library_items(
-            library_id=library_id,
-            media_type=media_type,
-            limit=self.matcher.preload_limit,
-        )
+            pass
 
         items: list[MediaItem] = []
-        for lib_item in library_items:
-            if not self._matches_plex_search(
-                item=lib_item,
-                required_genres=required_genres,
-                year_eq=year_eq,
-                year_gte=year_gte,
-                year_lte=year_lte,
-            ):
-                continue
-
+        for lib_item in matched:
             media_item = lib_item.to_media_item()
             media_item.media_type = media_type
             items.append(media_item)
-            if len(items) >= limit:
-                break
 
-        logger.info(f"[Jellyfin] Library Search: fetched {len(items)} items")
+        logger.info(f"[Jellyfin] Library query '{config.name}': {len(items)} of {len(library_items)} items")
         return items
 
-    def _matches_plex_search(
-        self,
-        item: LibraryItem,
-        required_genres: set[str],
-        year_eq: Optional[int],
-        year_gte: Optional[int],
-        year_lte: Optional[int],
-    ) -> bool:
-        """Apply supported plex_search filters to a Jellyfin item."""
-        item_year = item.year
-        if year_eq is not None and item_year != year_eq:
-            return False
-        if year_gte is not None and (item_year is None or item_year < year_gte):
-            return False
-        if year_lte is not None and (item_year is None or item_year > year_lte):
-            return False
+    async def _fetch_id_sources(self, config: CollectionConfig, media_type: MediaType) -> list[MediaItem]:
+        """tmdb_movie/show, tvdb_movie/show, tmdb_collection/keyword/director, trakt_list, mdblist_list."""
+        items: list[MediaItem] = []
+        is_movie = media_type == MediaType.MOVIE
 
-        if required_genres:
-            item_genres = {
-                genre.strip().lower()
-                for genre in item.genres
-                if genre and genre.strip()
-            }
-            if not required_genres.issubset(item_genres):
-                return False
+        # Explicit IDs
+        if is_movie:
+            for tmdb_id in config.tmdb_movie:
+                details = await self.tmdb.get_movie_details(tmdb_id)
+                items.append(details or Movie(title=f"tmdb:{tmdb_id}", tmdb_id=tmdb_id))
+            for tvdb_id in config.tvdb_movie:
+                logger.debug(f"tvdb_movie {tvdb_id} is not resolvable for movies, skipped")
+        else:
+            for tmdb_id in config.tmdb_show:
+                details = await self.tmdb.get_series_details(tmdb_id)
+                items.append(details or Series(title=f"tmdb:{tmdb_id}", tmdb_id=tmdb_id))
+            for tvdb_id in config.tvdb_show:
+                items.append(Series(title=f"tvdb:{tvdb_id}", tvdb_id=tvdb_id))
 
-        return True
+        # TMDb franchises / keywords / directors (movies)
+        if is_movie:
+            for collection_id in config.tmdb_collection:
+                items.extend(await self.tmdb.get_collection_parts(collection_id))
+            for keyword_id in config.tmdb_keyword:
+                items.extend(await self.tmdb.discover_movies(with_keywords=[keyword_id], limit=200))
+            for person_id in config.tmdb_director:
+                items.extend(await self.tmdb.get_director_movies(person_id))
+        else:
+            for keyword_id in config.tmdb_keyword:
+                items.extend(await self.tmdb.discover_series(with_keywords=[keyword_id], limit=200))
+
+        # Trakt lists
+        for list_url in config.trakt_lists:
+            parsed = _parse_trakt_list_url(list_url)
+            if not parsed:
+                logger.warning(f"[{config.name}] Unsupported Trakt list URL: {list_url}")
+                continue
+            if not self.trakt:
+                logger.warning(f"[{config.name}] trakt_list configured but Trakt is not authenticated")
+                break
+            try:
+                items.extend(await self.trakt.get_list(parsed[0], parsed[1], media_type))
+            except Exception as e:
+                logger.warning(f"[{config.name}] Trakt list {list_url} failed: {e}")
+
+        # MDBList lists
+        for list_url in config.mdblist_lists:
+            if not self.mdblist:
+                logger.warning(f"[{config.name}] mdblist_list configured but no MDBList client available")
+                break
+            try:
+                items.extend(await self.mdblist.get_list(list_url, media_type))
+            except Exception as e:
+                logger.warning(f"[{config.name}] MDBList {list_url} failed: {e}")
+
+        return items
 
     async def _fetch_tmdb_discover(
         self,
@@ -714,6 +914,8 @@ class CollectionBuilder:
                 with_original_language=discover.get("with_original_language"),
                 with_release_type=discover.get("with_release_type"),
                 region=discover.get("region"),
+                with_keywords=discover.get("with_keywords"),
+                with_companies=discover.get("with_companies"),
                 limit=adjusted_limit,
             )
         else:
@@ -736,6 +938,9 @@ class CollectionBuilder:
                 with_status=discover.get("with_status"),
                 with_original_language=discover.get("with_original_language"),
                 with_origin_country=discover.get("with_origin_country"),
+                with_networks=discover.get("with_networks"),
+                with_keywords=discover.get("with_keywords"),
+                with_companies=discover.get("with_companies"),
                 limit=adjusted_limit,
             )
 
@@ -1322,9 +1527,22 @@ class CollectionBuilder:
         # Get library-level settings (item-level tag takes priority over library-level)
         config = collection.config
 
+        radarr_enabled = (
+            config.radarr_add_missing
+            if config.radarr_add_missing is not None
+            else self.radarr_add_missing_default
+        )
+        sonarr_enabled = (
+            config.sonarr_add_missing
+            if config.sonarr_add_missing is not None
+            else self.sonarr_add_missing_default
+        )
+
         for item in missing:
             # Use media_type to determine Sonarr vs Radarr
             is_series = item.media_type == "series"
+            if (is_series and not sonarr_enabled) or (not is_series and not radarr_enabled):
+                continue
 
             if is_series and self.sonarr:
                 # Sonarr settings: item_sonarr_tag > sonarr_tag > client default

@@ -1,5 +1,6 @@
 """Collection models for Kometa-style configurations."""
 
+import re
 from datetime import date
 from enum import Enum
 from typing import Any, Optional
@@ -20,6 +21,7 @@ class ScheduleType(str, Enum):
     DAILY = "daily"
     WEEKLY = "weekly"
     MONTHLY = "monthly"
+    RANGE = "range"  # Seasonal: only active between two MM/DD dates
     NEVER = "never"
 
 
@@ -45,6 +47,17 @@ class CollectionSchedule(BaseModel):
     schedule_type: ScheduleType = ScheduleType.DAILY
     day_of_week: Optional[str] = None  # For weekly schedules (e.g., "sunday")
     day_of_month: Optional[int] = None  # For monthly schedules
+    range_start: Optional[tuple[int, int]] = None  # (month, day) for range() schedules
+    range_end: Optional[tuple[int, int]] = None
+
+    def is_active_on(self, today: date) -> bool:
+        """Whether a range() schedule covers `today` (handles year wrap, e.g. 12/30-01/02)."""
+        if self.schedule_type != ScheduleType.RANGE or not self.range_start or not self.range_end:
+            return True
+        current = (today.month, today.day)
+        if self.range_start <= self.range_end:
+            return self.range_start <= current <= self.range_end
+        return current >= self.range_start or current <= self.range_end
 
     @classmethod
     def from_kometa(cls, value: str | None) -> "CollectionSchedule":
@@ -63,6 +76,17 @@ class CollectionSchedule(BaseModel):
                 day = value.split("(")[1].rstrip(")")
                 return cls(schedule_type=ScheduleType.WEEKLY, day_of_week=day)
             return cls(schedule_type=ScheduleType.WEEKLY, day_of_week="sunday")
+
+        if value.startswith("range"):
+            match = re.match(r"range\(\s*(\d{1,2})/(\d{1,2})\s*-\s*(\d{1,2})/(\d{1,2})\s*\)", value)
+            if match:
+                m1, d1, m2, d2 = (int(g) for g in match.groups())
+                return cls(
+                    schedule_type=ScheduleType.RANGE,
+                    range_start=(m1, d1),
+                    range_end=(m2, d2),
+                )
+            return cls(schedule_type=ScheduleType.NEVER)
 
         if value.startswith("monthly"):
             if "(" in value:
@@ -213,6 +237,38 @@ class CollectionConfig(BaseModel):
     # Plex/Jellyfin search (for existing library items)
     plex_search: Optional[dict[str, Any]] = None
 
+    # Kometa `plex_all: true` + raw `filters:` evaluated against Jellyfin library items
+    plex_all: bool = False
+    library_filters: dict[str, Any] = Field(default_factory=dict)
+
+    # Additional Kometa builders
+    tmdb_movie: list[int] = Field(default_factory=list)
+    tmdb_show: list[int] = Field(default_factory=list)
+    tmdb_collection: list[int] = Field(default_factory=list)
+    tmdb_keyword: list[int] = Field(default_factory=list)
+    tmdb_director: list[int] = Field(default_factory=list)
+    tvdb_show: list[int] = Field(default_factory=list)
+    tvdb_movie: list[int] = Field(default_factory=list)
+    trakt_lists: list[str] = Field(default_factory=list)
+    mdblist_lists: list[str] = Field(default_factory=list)
+
+    # Labels (Jellyfin tags) applied to matching library items
+    item_label: list[str] = Field(default_factory=list)
+    non_item_remove_label: list[str] = Field(default_factory=list)
+    # Kometa `item_label.remove`: labels removed from every item the collection matches
+    item_label_remove: list[str] = Field(default_factory=list)
+
+    # Per-collection Radarr/Sonarr override of the global add_missing setting (None = use global)
+    radarr_add_missing: Optional[bool] = None
+    sonarr_add_missing: Optional[bool] = None
+
+    # When false, only labels are maintained (no Jellyfin collection is created)
+    build_collection: bool = True
+    delete_below_minimum: bool = False
+
+    # Remote poster (Kometa url_poster)
+    url_poster: Optional[str] = None
+
     # Radarr/Sonarr tags
     item_radarr_tag: Optional[str] = None
     item_sonarr_tag: Optional[str] = None
@@ -239,6 +295,7 @@ class Collection(BaseModel):
 
     config: CollectionConfig
     library_name: str
+    library_id: Optional[str] = None
     items: list[CollectionItem] = Field(default_factory=list)
 
     # Original source items (before filtering) for poster generation

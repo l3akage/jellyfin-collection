@@ -3,7 +3,7 @@
 import asyncio
 import time
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
@@ -13,6 +13,7 @@ from rich.console import Console
 from jfc.clients.discord import DiscordWebhook
 from jfc.clients.imdb import IMDbClient
 from jfc.clients.jellyfin import JellyfinClient
+from jfc.clients.mdblist import MDBListClient
 from jfc.clients.radarr import RadarrClient
 from jfc.clients.sonarr import SonarrClient
 from jfc.clients.signal import SignalClient
@@ -23,7 +24,7 @@ from jfc.clients.tmdb import TMDbClient
 from jfc.clients.trakt import TraktClient
 from jfc.core.config import Settings
 from jfc.models.collection import CollectionSchedule, ScheduleType
-from jfc.models.media import MediaType
+from jfc.models.media import MediaType, infer_media_type
 from jfc.models.report import CollectionReport, LibraryReport, RunReport
 from jfc.parsers.kometa import KometaParser
 from jfc.services.collection_builder import CollectionBuilder
@@ -59,6 +60,7 @@ class Runner:
         )
 
         self.imdb = IMDbClient()
+        self.mdblist = MDBListClient(api_key=settings.mdblist.api_key)
 
         self.trakt: Optional[TraktClient] = None
         self.trakt_auth: Optional[TraktAuth] = None
@@ -145,6 +147,7 @@ class Runner:
             sonarr=self.sonarr,
             poster_generator=self.poster_generator,
             dry_run=self.dry_run,
+            mdblist=self.mdblist,
         )
 
         # Initialize report generator
@@ -228,6 +231,7 @@ class Runner:
 
         # Reset media matcher cache to detect newly added items in Jellyfin
         self.builder.matcher.reset()
+        self.builder.reset_run_caches()
 
         # Initialize run report
         run_report = RunReport(
@@ -295,6 +299,18 @@ class Runner:
             for config in collection_configs:
                 # Filter by specified collections
                 if collections and config.name not in collections:
+                    continue
+
+                # Seasonal collections (range(MM/DD-MM/DD)): out of season they are skipped,
+                # and removed from Jellyfin when delete_not_scheduled is set
+                if (
+                    config.schedule.schedule_type == ScheduleType.RANGE
+                    and not ignore_schedule
+                    and not config.schedule.is_active_on(date.today())
+                ):
+                    if config.delete_not_scheduled:
+                        await self.builder.delete_collection_by_name(config.name)
+                    logger.debug(f"Skipping '{config.name}' - out of season")
                     continue
 
                 # Check schedule (skip if ignore_schedule is True)
@@ -511,6 +527,7 @@ class Runner:
         await self.jellyfin.close()
         await self.tmdb.close()
         await self.imdb.close()
+        await self.mdblist.close()
         if self.trakt:
             await self.trakt.close()
         if self.radarr:
@@ -520,16 +537,7 @@ class Runner:
 
     def _infer_media_type(self, library_name: str) -> MediaType:
         """Infer media type from library name."""
-        name_lower = library_name.lower()
-
-        if any(keyword in name_lower for keyword in ["film", "movie", "cinéma"]):
-            return MediaType.MOVIE
-
-        if any(keyword in name_lower for keyword in ["série", "series", "tv", "show", "cartoon"]):
-            return MediaType.SERIES
-
-        # Default to movies
-        return MediaType.MOVIE
+        return infer_media_type(library_name)
 
     def _should_run_today(self, schedule: CollectionSchedule) -> bool:
         """Check if collection should run today based on schedule."""
@@ -540,6 +548,9 @@ class Runner:
 
         if schedule.schedule_type == ScheduleType.NEVER:
             return False
+
+        if schedule.schedule_type == ScheduleType.RANGE:
+            return schedule.is_active_on(date.today())
 
         today = datetime.now()
 

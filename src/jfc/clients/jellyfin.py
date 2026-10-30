@@ -3,6 +3,7 @@
 import base64
 import mimetypes
 import re
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -28,6 +29,107 @@ def _safe_int(value: str | None) -> int | None:
     except (ValueError, TypeError):
         match = re.match(r"(\d+)", str(value))
         return int(match.group(1)) if match else None
+
+
+def apply_detail_fields(target: LibraryItem, item: dict[str, Any]) -> None:
+    """Fill the detailed LibraryItem fields from a Jellyfin `/Items` entry."""
+    created = item.get("DateCreated")
+    if created:
+        try:
+            target.date_added = datetime.fromisoformat(created.replace("Z", "+00:00")[:26])
+        except ValueError:
+            pass
+
+    premiere = item.get("PremiereDate")
+    if premiere:
+        try:
+            target.premiere_date = date.fromisoformat(premiere[:10])
+        except ValueError:
+            pass
+
+    target.tags = [t for t in (item.get("Tags") or []) if t]
+    target.studios = [s.get("Name") for s in (item.get("Studios") or []) if s.get("Name")]
+    target.status = item.get("Status")
+    target.community_rating = item.get("CommunityRating")
+    target.critic_rating = item.get("CriticRating")
+    target.official_rating = item.get("OfficialRating")
+    target.overview = item.get("Overview")
+    ticks = item.get("RunTimeTicks")
+    if ticks:
+        target.runtime_minutes = int(ticks / 600_000_000)
+
+    streams = item.get("MediaStreams")
+    if not streams:
+        sources = item.get("MediaSources") or []
+        streams = sources[0].get("MediaStreams", []) if sources else []
+
+    audio: list[str] = []
+    subtitles: list[str] = []
+    for stream in streams or []:
+        stream_type = stream.get("Type")
+        if stream_type == "Video" and target.resolution is None:
+            target.resolution = classify_resolution(stream.get("Width"), stream.get("Height"))
+            range_type = str(stream.get("VideoRangeType") or "")
+            target.dolby_vision = "DOVI" in range_type.upper() or stream.get("DvProfile") is not None
+            target.hdr = str(stream.get("VideoRange") or "").upper() == "HDR" or target.dolby_vision
+        elif stream_type == "Audio":
+            lang = normalize_language(stream.get("Language"))
+            if lang and lang not in audio:
+                audio.append(lang)
+        elif stream_type == "Subtitle":
+            lang = normalize_language(stream.get("Language"))
+            if lang and lang not in subtitles:
+                subtitles.append(lang)
+    target.audio_languages = audio
+    target.subtitle_languages = subtitles
+
+    target.edition = parse_edition(target.path)
+
+
+_EDITION_RE = re.compile(r"\{edition-([^}]+)\}", re.IGNORECASE)
+
+# ISO 639-2 (B/T) -> ISO 639-1 for the languages Kometa filters use
+_LANGUAGE_MAP = {
+    "ger": "de", "deu": "de", "eng": "en", "fre": "fr", "fra": "fr", "spa": "es", "ita": "it",
+    "jpn": "ja", "kor": "ko", "chi": "zh", "zho": "zh", "rus": "ru", "por": "pt", "dut": "nl",
+    "nld": "nl", "pol": "pl", "tur": "tr", "swe": "sv", "nor": "no", "dan": "da", "fin": "fi",
+    "cze": "cs", "ces": "cs", "hun": "hu", "ara": "ar", "hin": "hi", "heb": "he", "tha": "th",
+    "ukr": "uk", "rum": "ro", "ron": "ro", "gre": "el", "ell": "el",
+}
+
+
+def normalize_language(value: Optional[str]) -> Optional[str]:
+    """Normalize a language code to ISO 639-1 where it is known (else lower-cased as given)."""
+    if not value:
+        return None
+    code = str(value).strip().lower()
+    return _LANGUAGE_MAP.get(code, code)
+
+
+def classify_resolution(width: Optional[int], height: Optional[int]) -> Optional[str]:
+    """Map pixel dimensions to Kometa resolution names."""
+    w, h = width or 0, height or 0
+    if not w and not h:
+        return None
+    if w >= 3200 or h >= 2000:
+        return "4k"
+    if w >= 1800 or h >= 1000:
+        return "1080"
+    if w >= 1200 or h >= 700:
+        return "720"
+    if h >= 560:
+        return "576"
+    if h >= 460:
+        return "480"
+    return "sd"
+
+
+def parse_edition(path: Optional[str]) -> Optional[str]:
+    """Edition from Plex-style `{edition-IMAX}` in the file path."""
+    if not path:
+        return None
+    match = _EDITION_RE.search(path)
+    return match.group(1).strip() if match else None
 
 
 class JellyfinClient(BaseClient):
@@ -66,6 +168,7 @@ class JellyfinClient(BaseClient):
         media_type: Optional[MediaType] = None,
         limit: int = 50000,
         start_index: int = 0,
+        detailed: bool = False,
     ) -> list[LibraryItem]:
         """
         Get items from a library.
@@ -75,6 +178,7 @@ class JellyfinClient(BaseClient):
             media_type: Filter by media type
             limit: Maximum items to return
             start_index: Pagination offset
+            detailed: Also load tags, streams, dates, ratings (used for library filters)
 
         Returns:
             List of library items
@@ -82,7 +186,13 @@ class JellyfinClient(BaseClient):
         base_params = {
             "ParentId": library_id,
             "Recursive": True,
-            "Fields": "ProviderIds,Path,Overview,Genres",
+            "Fields": (
+                "ProviderIds,Path,Overview,Genres,DateCreated,Tags,Studios,PremiereDate,"
+                "MediaStreams,MediaSources,CommunityRating,CriticRating,OfficialRating,"
+                "RunTimeTicks,Status"
+                if detailed
+                else "ProviderIds,Path,Overview,Genres"
+            ),
         }
 
         if media_type == MediaType.MOVIE:
@@ -116,21 +226,22 @@ class JellyfinClient(BaseClient):
 
             for item in page:
                 provider_ids = item.get("ProviderIds", {})
-                items.append(
-                    LibraryItem(
-                        jellyfin_id=item["Id"],
-                        title=item["Name"],
-                        year=item.get("ProductionYear"),
-                        media_type=self._map_item_type(item.get("Type", "")),
-                        tmdb_id=_safe_int(provider_ids.get("Tmdb")),
-                        imdb_id=provider_ids.get("Imdb"),
-                        tvdb_id=_safe_int(provider_ids.get("Tvdb")),
-                        library_id=library_id,
-                        library_name="",
-                        path=item.get("Path"),
-                        genres=item.get("Genres", []) or [],
-                    )
+                library_item = LibraryItem(
+                    jellyfin_id=item["Id"],
+                    title=item["Name"],
+                    year=item.get("ProductionYear"),
+                    media_type=self._map_item_type(item.get("Type", "")),
+                    tmdb_id=_safe_int(provider_ids.get("Tmdb")),
+                    imdb_id=provider_ids.get("Imdb"),
+                    tvdb_id=_safe_int(provider_ids.get("Tvdb")),
+                    library_id=library_id,
+                    library_name="",
+                    path=item.get("Path"),
+                    genres=item.get("Genres", []) or [],
                 )
+                if detailed:
+                    apply_detail_fields(library_item, item)
+                items.append(library_item)
 
             fetched = len(page)
             offset += fetched
@@ -299,6 +410,44 @@ class JellyfinClient(BaseClient):
             items = response.json().get("Items", [])
             return items[0] if items else None
         return None
+
+    async def update_item_tags(
+        self,
+        item_id: str,
+        add: Optional[list[str]] = None,
+        remove: Optional[list[str]] = None,
+    ) -> bool:
+        """
+        Add/remove tags (Kometa "labels") on a library item.
+
+        Returns True if the item is in the desired state (including "nothing to change").
+        """
+        add = add or []
+        remove = remove or []
+        item = await self.get_collection(item_id)  # generic item fetch with full DTO fields
+        if not item:
+            logger.warning(f"Cannot update tags: item {item_id} not found")
+            return False
+
+        current = list(item.get("Tags") or [])
+        lowered_remove = {t.lower() for t in remove}
+        desired = [t for t in current if t.lower() not in lowered_remove]
+        existing = {t.lower() for t in desired}
+        for tag in add:
+            if tag.lower() not in existing:
+                desired.append(tag)
+                existing.add(tag.lower())
+
+        if desired == current:
+            return True
+
+        item["Tags"] = desired
+        response = await self.post(f"/Items/{item_id}", json=item)
+        if response.status_code == 204:
+            return True
+
+        logger.error(f"Failed to update tags on {item_id}: HTTP {response.status_code}")
+        return False
 
     async def get_collection_items(self, collection_id: str) -> list[str]:
         """

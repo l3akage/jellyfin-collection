@@ -1,6 +1,6 @@
 """Media item models."""
 
-from datetime import date
+from datetime import date, datetime
 from enum import Enum
 from typing import Optional
 
@@ -123,6 +123,24 @@ class LibraryItem(BaseModel):
     file_name: Optional[str] = None
     genres: list[str] = Field(default_factory=list)
 
+    # Detailed fields (only filled when the library is loaded with detailed=True)
+    date_added: Optional[datetime] = None
+    premiere_date: Optional[date] = None
+    tags: list[str] = Field(default_factory=list)
+    studios: list[str] = Field(default_factory=list)
+    resolution: Optional[str] = None  # "4k", "1080", "720", "576", "480", "sd"
+    dolby_vision: bool = False
+    hdr: bool = False
+    audio_languages: list[str] = Field(default_factory=list)  # ISO 639-1 where known
+    subtitle_languages: list[str] = Field(default_factory=list)
+    edition: Optional[str] = None  # parsed from "{edition-...}" in the file name
+    status: Optional[str] = None  # Series: Continuing / Ended
+    community_rating: Optional[float] = None
+    critic_rating: Optional[float] = None
+    official_rating: Optional[str] = None
+    runtime_minutes: Optional[int] = None
+    overview: Optional[str] = None
+
     def to_media_item(self) -> MediaItem:
         """Convert to MediaItem."""
         return MediaItem(
@@ -135,3 +153,16 @@ class LibraryItem(BaseModel):
             jellyfin_id=self.jellyfin_id,
             genres=self.genres,
         )
+
+
+def infer_media_type(library_name: str) -> MediaType:
+    """Infer the media type of a Jellyfin library from its name (movie by default)."""
+    name_lower = library_name.lower()
+
+    if any(keyword in name_lower for keyword in ["film", "movie", "cinéma"]):
+        return MediaType.MOVIE
+
+    if any(keyword in name_lower for keyword in ["série", "serie", "tv", "show", "cartoon"]):
+        return MediaType.SERIES
+
+    return MediaType.MOVIE

@@ -232,6 +232,8 @@ class TMDbClient(BaseClient):
         with_original_language: Optional[str] = None,
         with_release_type: Optional[str] = None,
         region: Optional[str] = None,
+        with_keywords: Optional[list[int]] = None,
+        with_companies: Optional[list[int]] = None,
         limit: int = 20,
     ) -> list[Movie]:
         """
@@ -286,6 +288,10 @@ class TMDbClient(BaseClient):
             params["with_release_type"] = with_release_type
         if region:
             params["region"] = region
+        if with_keywords:
+            params["with_keywords"] = "|".join(map(str, with_keywords))
+        if with_companies:
+            params["with_companies"] = "|".join(map(str, with_companies))
 
         # Fetch with pagination if limit > 20
         all_results: list[Movie] = []
@@ -328,6 +334,9 @@ class TMDbClient(BaseClient):
         with_status: Optional[int] = None,
         with_original_language: Optional[str] = None,
         with_origin_country: Optional[str] = None,
+        with_networks: Optional[list[int]] = None,
+        with_keywords: Optional[list[int]] = None,
+        with_companies: Optional[list[int]] = None,
         limit: int = 20,
     ) -> list[Series]:
         """
@@ -378,6 +387,12 @@ class TMDbClient(BaseClient):
             params["with_original_language"] = with_original_language
         if with_origin_country:
             params["with_origin_country"] = with_origin_country
+        if with_networks:
+            params["with_networks"] = "|".join(map(str, with_networks))
+        if with_keywords:
+            params["with_keywords"] = "|".join(map(str, with_keywords))
+        if with_companies:
+            params["with_companies"] = "|".join(map(str, with_companies))
 
         # Fetch with pagination if limit > 20
         all_results: list[Series] = []
@@ -553,6 +568,36 @@ class TMDbClient(BaseClient):
                     return True
 
         return False
+
+    async def get_collection_parts(self, collection_id: int) -> list[Movie]:
+        """Movies of a TMDb collection (e.g. a film franchise)."""
+        response = await self.get(f"/collection/{collection_id}", params=self._params())
+        if response.status_code == 404:
+            logger.warning(f"TMDb collection not found: {collection_id}")
+            return []
+        response.raise_for_status()
+        parts = response.json().get("parts", [])
+        movies = [self._parse_movie(part) for part in parts]
+        movies.sort(key=lambda m: (m.release_date is None, m.release_date))
+        return movies
+
+    async def get_director_movies(self, person_id: int) -> list[Movie]:
+        """Movies a person directed (TMDb person credits, crew job = Director)."""
+        response = await self.get(f"/person/{person_id}/movie_credits", params=self._params())
+        if response.status_code == 404:
+            logger.warning(f"TMDb person not found: {person_id}")
+            return []
+        response.raise_for_status()
+        crew = [c for c in response.json().get("crew", []) if c.get("job") == "Director"]
+        return [self._parse_movie(c) for c in crew]
+
+    async def get_series_status(self, tmdb_id: int) -> Optional[str]:
+        """TMDb status string of a series (Returning Series, Ended, Canceled, ...)."""
+        response = await self.get(f"/tv/{tmdb_id}", params=self._params())
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        return response.json().get("status")
 
     async def get_series_details(self, tmdb_id: int) -> Optional[Series]:
         """Get TV series details by TMDb ID."""
