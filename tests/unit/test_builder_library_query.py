@@ -221,3 +221,60 @@ async def test_empty_provider_result_changes_nothing():
     builder.jellyfin.get_collections = AsyncMock(return_value=[])
     await builder.sync_collection(empty, report)
     builder.jellyfin.create_collection.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_library_paging_survives_short_pages():
+    """Jellyfin sometimes returns a short page in the middle; loading must continue."""
+    from unittest.mock import MagicMock
+    from jfc.clients.jellyfin import JellyfinClient
+
+    total = 1200
+    calls = []
+
+    async def fake_get(url, params=None):
+        start, limit = params["StartIndex"], params["Limit"]
+        calls.append((start, limit))
+        end = min(start + limit, total)
+        count = end - start
+        if start == 500:
+            count = 46  # server answers short although more items follow
+        items = [{"Id": f"i{n}", "Name": f"T{n}", "Type": "Series"} for n in range(start, start + count)]
+        return MagicMock(status_code=200, raise_for_status=lambda: None, json=lambda: {"Items": items, "TotalRecordCount": total})
+
+    client = JellyfinClient.__new__(JellyfinClient)
+    client.get = fake_get
+    JellyfinClient._PAGE_RETRY_DELAY = 0
+    items = await client.get_library_items("lib", limit=50000)
+    # the persistently short page is retried twice, then treated as a server-side gap, not the end
+    assert [c[0] for c in calls] == [0, 500, 500, 500, 1000]
+    assert len(items) == 500 + 46 + 200
+
+    # a normal last page still ends the loop
+    calls.clear()
+    total = 700
+    items = await client.get_library_items("lib", limit=50000)
+    assert [c[0] for c in calls] == [0, 500]
+
+
+@pytest.mark.asyncio
+async def test_library_paging_recovers_when_retry_succeeds():
+    from unittest.mock import MagicMock
+    from jfc.clients.jellyfin import JellyfinClient
+
+    attempts = {"n": 0}
+
+    async def fake_get(url, params=None):
+        start, limit = params["StartIndex"], params["Limit"]
+        count = min(limit, 1200 - start)
+        if start == 500:
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                count = 46
+        items = [{"Id": f"i{n}", "Name": f"T{n}", "Type": "Movie"} for n in range(start, start + count)]
+        return MagicMock(status_code=200, raise_for_status=lambda: None, json=lambda: {"Items": items, "TotalRecordCount": 1200})
+
+    client = JellyfinClient.__new__(JellyfinClient)
+    client.get = fake_get
+    JellyfinClient._PAGE_RETRY_DELAY = 0
+    assert len(await client.get_library_items("lib", limit=50000)) == 1200

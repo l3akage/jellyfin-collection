@@ -1,5 +1,6 @@
 """Jellyfin API client for managing collections and media."""
 
+import asyncio
 import base64
 
 import httpx
@@ -138,6 +139,9 @@ def parse_edition(path: Optional[str]) -> Optional[str]:
 class JellyfinClient(BaseClient):
     """Client for Jellyfin API."""
 
+    _PAGE_RETRIES = 2
+    _PAGE_RETRY_DELAY = 1.0
+
     COLLECTION_ITEMS_BATCH_SIZE = 50
 
     def __init__(self, url: str, api_key: str):
@@ -208,6 +212,7 @@ class JellyfinClient(BaseClient):
         page_size = 500
         offset = start_index
         items: list[LibraryItem] = []
+        total: Optional[int] = None
 
         while len(items) < limit:
             remaining = limit - len(items)
@@ -220,11 +225,23 @@ class JellyfinClient(BaseClient):
                 "Limit": current_page_size,
                 "StartIndex": offset,
             }
-            response = await self.get("/Items", params=params)
-            response.raise_for_status()
-
-            page = response.json().get("Items", [])
-            if not page:
+            # Retry a short page that is not the last one (the server is busy, e.g. while saving items)
+            for attempt in range(1 + self._PAGE_RETRIES):
+                response = await self.get("/Items", params=params)
+                response.raise_for_status()
+                body = response.json()
+                page = body.get("Items", [])
+                total = body.get("TotalRecordCount")
+                is_short_middle_page = (
+                    isinstance(total, int)
+                    and len(page) < current_page_size
+                    and offset + current_page_size < total
+                )
+                if not is_short_middle_page or attempt == self._PAGE_RETRIES:
+                    break
+                logger.debug(f"[Jellyfin] Short page at {offset} ({len(page)}/{current_page_size}), retrying")
+                await asyncio.sleep(self._PAGE_RETRY_DELAY * (attempt + 1))
+            if not page and not (isinstance(total, int) and offset + current_page_size < total):
                 break
 
             for item in page:
@@ -246,10 +263,23 @@ class JellyfinClient(BaseClient):
                     apply_detail_fields(library_item, item)
                 items.append(library_item)
 
-            fetched = len(page)
-            offset += fetched
-            if fetched < current_page_size:
-                break
+            # A page can be shorter than requested without being the last one (Jellyfin does that
+            # under load), so the end is decided by TotalRecordCount, not by the page length.
+            # StartIndex indexes the full result, hence the offset advances by the requested size.
+            if isinstance(total, int):
+                offset += current_page_size
+                if offset >= total:
+                    break
+            else:
+                offset += len(page)
+                if len(page) < current_page_size:
+                    break
+
+        if isinstance(total, int) and len(items) < min(total, limit):
+            logger.warning(
+                f"[Jellyfin] Library {library_id}: loaded {len(items)} of {total} items "
+                "(server returned short pages); collections may be incomplete"
+            )
 
         return items
 
